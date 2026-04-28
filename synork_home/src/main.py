@@ -88,7 +88,6 @@ from shared.protocol import (
     EntityStatePayload,
     EntityStateQuery,
     EntityStateUpdate,
-    Persona as PersonaEnum,
     ServiceCallRequest,
     VoiceQueryFromAssistant,
     VoiceResponseToAssistant,
