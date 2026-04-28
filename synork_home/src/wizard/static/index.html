@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Synork Home setup</title>
+    <link rel="stylesheet" href="static/wizard.css" />
+  </head>
+  <body>
+    <main id="root" class="wizard">
+      <header class="wizard__header">
+        <div class="wizard__brand">Synork Home</div>
+        <div id="step-indicator" class="wizard__steps" aria-hidden="true"></div>
+      </header>
+      <section id="content" class="wizard__content">
+        <div class="loading">Loading…</div>
+      </section>
+      <footer class="wizard__footer">
+        <span id="device-id-tag" class="wizard__device-id"></span>
+      </footer>
+    </main>
+    <script src="static/wizard.js" defer></script>
+  </body>
+</html>

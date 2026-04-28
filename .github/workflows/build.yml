@@ -1,0 +1,64 @@
+name: Validate Add-on
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifests
+        run: |
+          # repository.yaml present
+          test -f repository.yaml
+          # each addon dir has config.yaml
+          for d in */; do
+            d="${d%/}"
+            [ "$d" = ".github" ] && continue
+            test -f "$d/config.yaml" || { echo "MISSING $d/config.yaml"; exit 1; }
+            test -f "$d/Dockerfile" || { echo "MISSING $d/Dockerfile"; exit 1; }
+          done
+          echo "Repository structure OK."
+
+      - name: Home Assistant add-on lint
+        uses: frenck/action-addon-linter@v2
+        with:
+          path: "./synork_home"
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.arch == 'aarch64'
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve base image
+        id: base
+        run: |
+          case "${{ matrix.arch }}" in
+            amd64)   echo "image=ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.18" >> "$GITHUB_OUTPUT"
+                     echo "platform=linux/amd64" >> "$GITHUB_OUTPUT" ;;
+            aarch64) echo "image=ghcr.io/home-assistant/aarch64-base-python:3.12-alpine3.18" >> "$GITHUB_OUTPUT"
+                     echo "platform=linux/arm64" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Build add-on
+        uses: docker/build-push-action@v5
+        with:
+          context: synork_home
+          file: synork_home/Dockerfile
+          platforms: ${{ steps.base.outputs.platform }}
+          build-args: BUILD_FROM=${{ steps.base.outputs.image }}
+          tags: synork-home-addon:${{ matrix.arch }}-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max

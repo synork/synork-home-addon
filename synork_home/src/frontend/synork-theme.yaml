@@ -1,0 +1,102 @@
+# Synork Home — HA Frontend Theme
+# Applied via HA's YAML theme system to match Synork branding.
+#
+# Theme tokens follow HA's frontend theme spec. These are real values
+# derived from the Synork design system (indigo/violet palette, dark-first).
+#
+# Registration: The install_frontend.py script copies this to
+# /config/themes/synork-home.yaml and sets it as the default.
+
+Synork Home:
+  # ── Primary palette ──
+  primary-color: "#6366f1"          # Indigo-500 — main interactive color
+  accent-color: "#8b5cf6"           # Violet-500 — secondary accent
+  primary-background-color: "#0f172a"  # Slate-900 — app background
+  secondary-background-color: "#1e293b" # Slate-800 — card/surface background
+  divider-color: "#334155"          # Slate-700
+
+  # ── Text ──
+  primary-text-color: "#e2e8f0"     # Slate-200 — primary text
+  secondary-text-color: "#94a3b8"   # Slate-400 — secondary/muted text
+  text-primary-color: "#e2e8f0"
+  disabled-text-color: "#475569"    # Slate-600
+
+  # ── Card ──
+  card-background-color: "#1e293b"  # Slate-800
+  ha-card-background: "#1e293b"
+  ha-card-border-radius: "12px"
+  ha-card-border-color: "#334155"
+  ha-card-box-shadow: "0 1px 3px rgba(0,0,0,0.3)"
+
+  # ── Header / sidebar ──
+  app-header-background-color: "#0f172a"
+  app-header-text-color: "#e2e8f0"
+  sidebar-background-color: "#0f172a"
+  sidebar-text-color: "#e2e8f0"
+  sidebar-selected-background-color: "#1e293b"
+  sidebar-selected-icon-color: "#8b5cf6"
+  sidebar-icon-color: "#94a3b8"
+
+  # ── Switches / Toggles ──
+  switch-checked-color: "#6366f1"
+  switch-checked-button-color: "#fff"
+  switch-checked-track-color: "#6366f1"
+  switch-unchecked-button-color: "#94a3b8"
+  switch-unchecked-track-color: "#334155"
+
+  # ── Buttons ──
+  mdc-theme-primary: "#6366f1"
+  mdc-theme-secondary: "#8b5cf6"
+
+  # ── Chips / Badges ──
+  ha-chip-background-color: "#1e293b"
+  ha-chip-text-color: "#e2e8f0"
+
+  # ── States ──
+  state-active-color: "#6366f1"
+  state-icon-active-color: "#6366f1"
+  state-icon-color: "#94a3b8"
+  state-on-color: "#6366f1"
+  state-off-color: "#475569"
+
+  # ── Lights (when on) ──
+  state-light-on-color: "#fbbf24"   # Amber-400 — warm glow for lights
+  state-light-off-color: "#475569"
+
+  # ── Climate ──
+  state-climate-heat-color: "#ef4444"
+  state-climate-cool-color: "#3b82f6"
+  state-climate-auto-color: "#8b5cf6"
+
+  # ── Alerts ──
+  error-color: "#ef4444"           # Red-500
+  warning-color: "#f59e0b"         # Amber-500
+  success-color: "#22c55e"         # Green-500
+  info-color: "#3b82f6"            # Blue-500
+
+  # ── Scrollbar ──
+  scrollbar-thumb-color: "#334155"
+
+  # ── Dialog ──
+  ha-dialog-border-radius: "16px"
+
+  # ── Code ──
+  code-editor-background-color: "#0f172a"
+  codemirror-keyword: "#c084fc"
+  codemirror-string: "#34d399"
+  codemirror-number: "#fbbf24"
+  codemirror-comment: "#64748b"
+
+  # ── Label badge ──
+  label-badge-background-color: "#1e293b"
+  label-badge-text-color: "#e2e8f0"
+
+  # ── Modes (for mode-specific cards) ──
+  modes-more-info-raised-opacity: "0.1"
+
+  # ── Energy ──
+  energy-grid-consumption-color: "#6366f1"
+  energy-grid-return-color: "#22c55e"
+  energy-solar-color: "#fbbf24"
+  energy-battery-in-color: "#3b82f6"
+  energy-battery-out-color: "#ef4444"
