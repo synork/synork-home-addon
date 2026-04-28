@@ -204,44 +204,17 @@
   }
 
   async function goToHouseholds() {
+    // Each hub creates its own household. We don't show a picker; we just
+    // ask for a name + location. Existing households remain untouched and
+    // can still be reached from the mobile app / dashboard.
     setStepIndicator("household");
-    show(h("div", { class: "loading" }, spinner(), "Loading households…"));
-    const { ok, data } = await api("GET", "api/wizard/households");
-    if (!ok || !data.ok) {
-      if (data && data.error === "session_expired") { renderSignIn("step.signin.error.invalid"); return; }
-      renderError(data && data.detail ? data.detail : "Could not load households.");
-      return;
-    }
-    households = data.households || [];
-    selectedHouseholdId = households.length > 0 ? households[0].household_id : "__new__";
+    households = [];
+    selectedHouseholdId = "__new__";
     renderHouseholdPick();
   }
 
   function renderHouseholdPick(errorMsg) {
     setStepIndicator("household");
-
-    const existingList = h("ul", { class: "household-list" });
-    for (const hh of households) {
-      const isSel = hh.household_id === selectedHouseholdId;
-      const li = h("li", {
-        class: isSel ? "selected" : "",
-        dataset: { id: hh.household_id },
-        onclick: () => { selectInto("__id__", hh.household_id); },
-      },
-        h("span", { class: "name" }, hh.name),
-        h("span", { class: "role" }, hh.household_id),
-      );
-      existingList.appendChild(li);
-    }
-
-    const newRow = h("li", {
-      class: selectedHouseholdId === "__new__" ? "selected" : "",
-      dataset: { id: "__new__" },
-      onclick: () => { selectInto("__id__", "__new__"); },
-    },
-      h("span", { class: "name" }, "+ " + s("step.household.create")),
-    );
-    const newWrapper = h("ul", { class: "household-list" }, newRow);
 
     const newNameInput = h("input", {
       type: "text", id: "new-household-name",
@@ -249,9 +222,6 @@
       value: newHouseholdName,
       oninput: (e) => { newHouseholdName = e.target.value; },
     });
-    const newFields = h("div", { id: "new-household-fields" },
-      h("div", { class: "field" }, newNameInput));
-    newFields.style.display = selectedHouseholdId === "__new__" ? "block" : "none";
 
     const locationInput = h("input", {
       type: "text", id: "device-location",
@@ -273,9 +243,7 @@
     show(h("div", { class: "step" },
       h("h1", null, s("step.household.title")),
       h("p", null, s("step.household.body")),
-      households.length > 0 ? existingList : null,
-      newWrapper,
-      newFields,
+      field({ label: s("step.household.create"), input: newNameInput }),
       field({ label: s("step.household.location.label"), input: locationInput }),
       errorMsg ? errorBanner(errorMsg) : null,
       h("div", { class: "actions" }, backBtn, pairBtn),
@@ -283,16 +251,15 @@
   }
 
   /**
-   * Capture current input values and switch the selected household, then
-   * re-render. The "__id__" first-arg is a marker for "switching the
-   * highlighted row" — it exists so the call site reads naturally.
+   * Capture current input values. (Kept as a stub for any callers that
+   * still reference it; the picker is gone but the inputs read directly.)
    */
   function selectInto(_marker, newId) {
     const nameEl = document.getElementById("new-household-name");
     if (nameEl) newHouseholdName = nameEl.value;
     const locEl = document.getElementById("device-location");
     if (locEl) deviceLocation = locEl.value;
-    selectedHouseholdId = newId;
+    selectedHouseholdId = newId || "__new__";
     renderHouseholdPick();
   }
 
@@ -302,9 +269,8 @@
     const locEl = document.getElementById("device-location");
     if (locEl) deviceLocation = locEl.value.trim();
 
-    const isNew = selectedHouseholdId === "__new__";
-    if (isNew && !newHouseholdName) {
-      renderHouseholdPick("Please name the new household.");
+    if (!newHouseholdName) {
+      renderHouseholdPick("Please name the household.");
       return;
     }
 
@@ -314,8 +280,8 @@
       h("p", null, spinner(), s("step.pairing.body"))));
 
     const payload = {
-      household_id: isNew ? null : selectedHouseholdId,
-      household_name: isNew ? newHouseholdName : null,
+      household_id: null,
+      household_name: newHouseholdName,
       device_location: deviceLocation || null,
       device_label: null,
     };
