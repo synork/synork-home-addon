@@ -117,14 +117,15 @@ class HABridge:
 
         logger.info("Connected to HA WebSocket (version: %s)", msg.get("ha_version"))
 
+        # Start event listening loop FIRST so subsequent _ws_call() responses
+        # can be dispatched into the pending-futures table.
+        self._event_task = asyncio.create_task(self._event_loop())
+
         # Load initial states
         await self._load_all_states()
 
         # Subscribe to state_changed events
         await self._subscribe_state_changes()
-
-        # Start event listening loop
-        self._event_task = asyncio.create_task(self._event_loop())
 
     async def disconnect(self) -> None:
         """Disconnect from HA."""
