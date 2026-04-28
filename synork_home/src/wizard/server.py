@@ -203,7 +203,7 @@ class WizardServer:
         if not email or not password:
             return web.json_response({"ok": False, "error": "missing_credentials"}, status=400)
 
-        url = f"{self._relay_api_url}/api/v1/home/mobile/auth/token"
+        url = f"{self._relay_api_url}/api/home/mobile/auth/token"
         try:
             async with self._http.post(url, json={"email": email, "password": password}) as resp:
                 resp_body = await resp.text()
@@ -245,7 +245,7 @@ class WizardServer:
     async def _handle_households(self, request: web.Request) -> web.Response:
         if not self._bearer_token:
             return web.json_response({"ok": False, "error": "not_signed_in"}, status=401)
-        url = f"{self._relay_api_url}/api/v1/home/households"
+        url = f"{self._relay_api_url}/api/home/households"
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         try:
             async with self._http.get(url, headers=headers) as resp:
@@ -308,7 +308,7 @@ class WizardServer:
                 status=400,
             )
 
-        url = f"{self._relay_api_url}/api/v1/home/pairing/self_install"
+        url = f"{self._relay_api_url}/api/home/pairing/self_install"
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         payload = {
             "device_id": config.device_id,
