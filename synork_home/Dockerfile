@@ -26,6 +26,9 @@ RUN apk add --no-cache \
     dbus \
     # USB serial for radio dongles
     libusb \
+    # git: needed by the bootloader to fetch live app code (auto-update)
+    git \
+    ca-certificates \
     # Thread/OTBR dependencies (Session 18)
     # Included in all images; OTBR only starts when Thread radio detected.
     # ipset + iptables: firewall rules for Thread border routing
@@ -68,6 +71,12 @@ RUN apk del gcc musl-dev python3-dev libffi-dev 2>/dev/null || true
 COPY shared/ /app/shared/
 
 COPY src/ /app/
+
+# Bootloader: pulls latest app code from the public repo on every container
+# start (Synork live update system A). The /app tree above is kept as a
+# baked-in baseline used only when the network is unavailable.
+COPY bootloader.py /opt/bootloader.py
+RUN chmod a+x /opt/bootloader.py
 
 # Entrypoint script. The addon's config.yaml sets `init: false` which
 # disables Docker's default init wrapper so the parent image's `/init`

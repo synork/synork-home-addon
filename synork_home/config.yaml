@@ -1,6 +1,6 @@
 # Synork Home — Home Assistant Add-on Manifest
 name: "Synork Home"
-version: "0.1.7"
+version: "0.2.0"
 slug: synork_home
 description: >-
   Synork Home — smart home hub add-on for Home Assistant.
@@ -30,6 +30,9 @@ options:
   assistant_pipeline: true
   frontend_patcher: true
   satellite_port: 8765
+  update_channel: "stable"
+  update_repo_url: "https://github.com/synork/synork-home-addon.git"
+  disable_autoupdate: false
 
 schema:
   mode: list(hub|assistant)
@@ -47,6 +50,9 @@ schema:
   assistant_pipeline: bool
   frontend_patcher: bool
   satellite_port: "int(1024,65535)?"
+  update_channel: list(stable|beta|dev)
+  update_repo_url: url
+  disable_autoupdate: bool
 
 # --------------------------------------------------------------------------- #
 # Network

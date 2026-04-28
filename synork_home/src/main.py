@@ -231,6 +231,14 @@ class SynorkAddon:
 
             logger.info("All subsystems started — addon is operational (%s mode)", self.config.mode)
 
+            # Auto-update poller (channel-based git pull, see updater.py)
+            try:
+                import updater  # type: ignore[import-not-found]
+
+                self._updater_task = asyncio.create_task(updater.run())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("auto-updater failed to start: %r", exc)
+
             # Wait for shutdown signal
             await self._shutdown_event.wait()
 

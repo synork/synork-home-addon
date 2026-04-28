@@ -31,10 +31,18 @@ bashio::log.info "Relay URL: ${RELAY_URL}"
 bashio::log.info "Language: ${LANGUAGE}"
 bashio::log.info "Log level: ${LOG_LEVEL}"
 
+# Live update channel (stable|beta|dev) — read from addon options if present.
+export SYNORK_UPDATE_CHANNEL="$(bashio::config 'update_channel' 'stable')"
+export SYNORK_REPO_URL="$(bashio::config 'update_repo_url' 'https://github.com/synork/synork-home-addon.git')"
+if bashio::config.true 'disable_autoupdate'; then
+    export SYNORK_DISABLE_AUTOUPDATE=1
+fi
+bashio::log.info "Update channel: ${SYNORK_UPDATE_CHANNEL}"
+
 # --------------------------------------------------------------------------- #
-# Start the addon
+# Start the addon (via the bootloader, which fetches the latest app code)
 # --------------------------------------------------------------------------- #
-exec python3 /app/main.py \
+exec python3 /opt/bootloader.py \
     --relay-url "${RELAY_URL}" \
     --relay-api-url "${RELAY_API_URL}" \
     --device-id "${DEVICE_ID}" \
