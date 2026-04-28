@@ -69,23 +69,16 @@ COPY shared/ /app/shared/
 
 COPY src/ /app/
 
-# Install run.sh as an s6 longrun service (s6-overlay v3 pattern)
-# This is required by recent HA base images — using `CMD ["/run.sh"]`
-# triggers `s6-overlay-suexec: fatal: can only run as pid 1` because
-# with-contenv/bashio expect to be invoked from inside the s6 service tree.
-COPY run.sh /etc/services.d/synork/run
-RUN chmod a+x /etc/services.d/synork/run \
-    && printf '#!/command/execlineb -S0\nimportas -i CODE 1\nimportas -i SIGNAL 2\ns6-svscanctl -t /var/run/s6/services\n' \
-       > /etc/services.d/synork/finish \
-    && chmod a+x /etc/services.d/synork/finish
+# Entrypoint script. The addon's config.yaml sets `init: false` which
+# disables Docker's default init wrapper so the parent image's `/init`
+# (s6-overlay v3) becomes PID 1, which is required for s6-overlay-suexec
+# and `with-contenv bashio` to function.
+COPY run.sh /
+RUN chmod a+x /run.sh
 
 # Persistent data directory (HA maps /data for addon storage)
 # /data/synork/ holds wizard sidecar (hub_config.json) and assistant pairing
 # config — both written by the addon at runtime, not bundled in the image.
 RUN mkdir -p /data/config /data/cache /data/frontend /data/synork
 
-# --------------------------------------------------------------------------- #
-# Entrypoint — leave it to the parent image (/init from s6-overlay).
-# Do NOT set CMD — s6-overlay v3 will discover and run our service in
-# /etc/services.d/synork/ automatically.
-# --------------------------------------------------------------------------- #
+CMD [ "/run.sh" ]

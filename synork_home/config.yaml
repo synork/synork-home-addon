@@ -1,6 +1,6 @@
 # Synork Home — Home Assistant Add-on Manifest
 name: "Synork Home"
-version: "0.1.3"
+version: "0.1.4"
 slug: synork_home
 description: >-
   Synork Home — smart home hub add-on for Home Assistant.
@@ -89,6 +89,10 @@ audio: true
 
 # USB access for radio dongles (Zigbee/Z-Wave)
 usb: true
+
+# Required for s6-overlay v3 base images: disable Docker's default
+# init wrapper so the image's `/init` (s6-overlay) becomes PID 1.
+init: false
 
 # Privileged for hostapd (WiFi AP) and network configuration
 privileged:
