@@ -53,7 +53,7 @@ RUN apk add --no-cache \
 # --------------------------------------------------------------------------- #
 # Python dependencies
 # --------------------------------------------------------------------------- #
-COPY requirements.txt /tmp/
+COPY addon/requirements.txt /tmp/
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
@@ -68,9 +68,16 @@ RUN apk del gcc musl-dev python3-dev libffi-dev 2>/dev/null || true
 COPY shared/ /app/shared/
 
 COPY src/ /app/
-COPY run.sh /
 
-RUN chmod a+x /run.sh
+# Install run.sh as an s6 longrun service (s6-overlay v3 pattern)
+# This is required by recent HA base images — using `CMD ["/run.sh"]`
+# triggers `s6-overlay-suexec: fatal: can only run as pid 1` because
+# with-contenv/bashio expect to be invoked from inside the s6 service tree.
+COPY run.sh /etc/services.d/synork/run
+RUN chmod a+x /etc/services.d/synork/run \
+    && printf '#!/command/execlineb -S0\nimportas -i CODE 1\nimportas -i SIGNAL 2\ns6-svscanctl -t /var/run/s6/services\n' \
+       > /etc/services.d/synork/finish \
+    && chmod a+x /etc/services.d/synork/finish
 
 # Persistent data directory (HA maps /data for addon storage)
 # /data/synork/ holds wizard sidecar (hub_config.json) and assistant pairing
@@ -78,6 +85,7 @@ RUN chmod a+x /run.sh
 RUN mkdir -p /data/config /data/cache /data/frontend /data/synork
 
 # --------------------------------------------------------------------------- #
-# Entrypoint
+# Entrypoint — leave it to the parent image (/init from s6-overlay).
+# Do NOT set CMD — s6-overlay v3 will discover and run our service in
+# /etc/services.d/synork/ automatically.
 # --------------------------------------------------------------------------- #
-CMD [ "/run.sh" ]
