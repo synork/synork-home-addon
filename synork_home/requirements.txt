@@ -2,7 +2,7 @@
 # NOTE: versions pinned for reproducibility; review before release
 
 # WebSocket + HTTP
-websockets>=12.0,<13.0
+websockets>=13.0,<14.0
 aiohttp>=3.9,<4.0
 
 # Protocol types
