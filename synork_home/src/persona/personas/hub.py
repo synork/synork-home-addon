@@ -13,11 +13,25 @@ persona's job is to ensure they're configured and to report their status.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from shared.persona_schema import PersonaConfig, PersonaServiceConfig, PersonaServiceState
 
+try:
+    from supervisor import SupervisorClient
+except ImportError:  # pragma: no cover
+    SupervisorClient = None  # type: ignore[assignment]
+
 logger = logging.getLogger("synork.persona.hub")
+
+# Mapping persona-service -> Supervisor add-on slug that must be running for
+# the matching HA integration to actually work. Slugs are stable for the
+# core add-on repository (always present in Supervisor installs).
+_SERVICE_TO_ADDON_SLUG: dict[str, str] = {
+    "zwave_js": "core_zwave_js",
+    "otbr": "core_openthread_border_router",
+    "matter": "core_matter_server",
+}
 
 
 class HubPersona:
@@ -97,29 +111,55 @@ class HubPersona:
             return results
 
         loaded_services = await _safe_get_services(ha_bridge)
+        supervisor = self._make_supervisor_client()
 
-        for svc in self._config.services:
-            name = svc.service_name
-            if name in loaded_services:
-                results[name] = True
-                continue
-            try:
-                if await ha_bridge.has_config_entry(name):
-                    # Entry exists but services not loaded yet (e.g. setup in
-                    # progress) — nothing for us to do.
+        try:
+            for svc in self._config.services:
+                name = svc.service_name
+
+                # Step 1: ensure the matching Supervisor add-on is installed
+                # and running (no-op for integrations that ship in HA Core).
+                addon_slug = _SERVICE_TO_ADDON_SLUG.get(name)
+                if addon_slug and supervisor is not None:
+                    addon_options = self._addon_options_for(name, svc)
+                    addon_ok = await supervisor.ensure_addon_running(
+                        addon_slug, options=addon_options,
+                    )
+                    if not addon_ok:
+                        logger.warning(
+                            "Hub: Supervisor add-on %s for %s could not be "
+                            "auto-started — integration may need manual setup",
+                            addon_slug, name,
+                        )
+
+                # Step 2: ensure the HA integration itself is configured.
+                if name in loaded_services:
                     results[name] = True
                     continue
-            except Exception:
-                pass
+                try:
+                    if await ha_bridge.has_config_entry(name):
+                        # Entry exists but services not loaded yet (e.g. setup
+                        # in progress) — nothing for us to do.
+                        results[name] = True
+                        continue
+                except Exception:
+                    pass
 
-            if name == "zha":
-                results[name] = await self._provision_zha(ha_bridge, svc)
-            elif name == "zwave_js":
-                results[name] = await self._provision_zwave_js(ha_bridge, svc)
-            else:
-                # otbr and friends are managed by their own add-ons; nothing
-                # to do via the config-flow API.
-                results[name] = False
+                if name == "zha":
+                    results[name] = await self._provision_zha(ha_bridge, svc)
+                elif name == "zwave_js":
+                    results[name] = await self._provision_zwave_js(ha_bridge, svc)
+                elif name == "matter":
+                    results[name] = await self._provision_matter(ha_bridge, svc)
+                elif name == "otbr":
+                    # OTBR has no user-facing config flow — once the add-on is
+                    # running the integration is auto-discovered by HA.
+                    results[name] = bool(addon_slug) and addon_ok if addon_slug else False
+                else:
+                    results[name] = False
+        finally:
+            if supervisor is not None:
+                await supervisor.close()
 
         ok = [k for k, v in results.items() if v]
         skip = [k for k, v in results.items() if not v]
@@ -178,7 +218,10 @@ class HubPersona:
         device_path = svc.config.get("device_path", "/dev/ttyACM0")
 
         # Z-Wave JS in HA Supervisor uses a managed add-on; the integration
-        # config flow asks "use Supervisor add-on?" → "device path?".
+        # config flow asks "use Supervisor add-on?" → "device path?". By the
+        # time we get here the Supervisor add-on is already installed and
+        # running (see ensure_addon_running above), so we just point the
+        # integration at it.
         step_inputs = {
             "user": {"use_addon": True},
             "on_supervisor": {"use_addon": True},
@@ -201,9 +244,64 @@ class HubPersona:
         else:
             logger.warning(
                 "Hub: Z-Wave JS auto-configuration did not complete — "
-                "the Z-Wave JS add-on may need to be installed first",
+                "check Settings → Devices & Services for a pending flow",
             )
         return ok
+
+    async def _provision_matter(self, ha_bridge: Any, svc: PersonaServiceConfig) -> bool:
+        """Walk Matter's config flow — the Matter Server add-on is already
+        installed/running by the time we get here."""
+        ws_url = svc.config.get("ws_url", "ws://core-matter-server:5580/ws")
+        step_inputs = {
+            "user": {"url": ws_url},
+            "on_supervisor": {"use_addon": True},
+            "install_addon": {},
+            "start_addon": {},
+            "manual": {"url": ws_url},
+            "confirm": {},
+        }
+        logger.info("Hub: auto-configuring Matter (ws=%s)", ws_url)
+        ok = await ha_bridge.auto_complete_config_flow(
+            handler="matter",
+            step_inputs=step_inputs,
+            default_input={},
+            max_steps=10,
+        )
+        if ok:
+            logger.info("Hub: Matter auto-configured in HA")
+        else:
+            logger.warning(
+                "Hub: Matter auto-configuration did not complete — "
+                "check Settings → Devices & Services for a pending flow",
+            )
+        return ok
+
+    # -- helpers ------------------------------------------------------- #
+
+    @staticmethod
+    def _make_supervisor_client() -> Optional["SupervisorClient"]:
+        if SupervisorClient is None:
+            return None
+        client = SupervisorClient()
+        if not client.available:
+            return None
+        return client
+
+    @staticmethod
+    def _addon_options_for(
+        service_name: str, svc: PersonaServiceConfig,
+    ) -> Optional[dict[str, Any]]:
+        """Return Supervisor-add-on ``options`` to apply for a given service.
+
+        Most add-ons either ship sensible defaults or expect to be configured
+        through their own UI; we only set options where Synork already knows
+        the right answer (e.g. the Z-Wave radio path).
+        """
+        if service_name == "zwave_js":
+            device_path = svc.config.get("device_path")
+            if device_path:
+                return {"device": device_path, "network_key": "", "s0_legacy_key": ""}
+        return None
 
     async def _configure_service(self, svc: PersonaServiceConfig) -> None:
         """Ensure an HA integration is configured for this service.

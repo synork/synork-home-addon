@@ -1,6 +1,6 @@
 # Synork Home — Home Assistant Add-on Manifest
 name: "Synork Home"
-version: "0.5.5"
+version: "0.5.6"
 slug: synork_home
 description: >-
   Synork Home — smart home hub add-on for Home Assistant.
@@ -87,6 +87,7 @@ map:
 # Capabilities and access
 # --------------------------------------------------------------------------- #
 hassio_api: true
+hassio_role: manager  # required to install/start core_zwave_js, core_matter_server, core_openthread_border_router
 homeassistant_api: true
 auth_api: true
 
