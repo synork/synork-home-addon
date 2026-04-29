@@ -40,8 +40,30 @@ _THEME_SRC = _SRC_DIR / "synork-theme.yaml"
 _PATCHER_SRC = _SRC_DIR / "synork-patcher.js"
 _PANEL_SRC = _SRC_DIR / "synork-panel"
 
-# Destination paths (in HA's config directory)
-_CONFIG_DIR = Path("/config")
+
+def _detect_ha_config_dir() -> Path:
+    """Return the path inside the addon where HA's config dir is mounted.
+
+    The Supervisor mounts HA's config directory at one of two locations
+    depending on which ``map:`` entry the addon declared:
+
+      * ``homeassistant_config:rw`` (current schema)  -> ``/homeassistant``
+      * ``config:rw`` (legacy schema)                 -> ``/config``
+
+    Synork Home uses the new schema, so the active mount is
+    ``/homeassistant``. We probe for a ``configuration.yaml`` to pick the
+    right one and fall back to ``/homeassistant`` if neither exists yet.
+    """
+    for candidate in (Path("/homeassistant"), Path("/config")):
+        if (candidate / "configuration.yaml").exists():
+            return candidate
+    # Prefer the new path even if no configuration.yaml was found.
+    if Path("/homeassistant").exists():
+        return Path("/homeassistant")
+    return Path("/config")
+
+
+_CONFIG_DIR = _detect_ha_config_dir()
 _THEMES_DIR = _CONFIG_DIR / "themes"
 _WWW_DIR = _CONFIG_DIR / "www"
 _SYNORK_WWW = _WWW_DIR / "synork"

@@ -7,4 +7,4 @@ at deploy time. Imported by relay_client (sent in AddonHello), the wizard
 Bump this string AND ``config.yaml`` together when releasing.
 """
 
-ADDON_VERSION = "0.5.4"
+ADDON_VERSION = "0.5.5"
