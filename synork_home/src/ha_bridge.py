@@ -271,6 +271,13 @@ class HABridge:
         """Return all cached entity states."""
         return list(self._entity_states.values())
 
+    async def get_services(self) -> dict[str, Any]:
+        """Fetch the loaded HA services map ({domain: {service: ...}})."""
+        result = await self._ws_call({"type": "get_services"})
+        if not result.get("success"):
+            return {}
+        return result.get("result", {}) or {}
+
     async def get_entity_state(self, entity_id: str) -> Optional[dict[str, Any]]:
         """Get the cached state of a specific entity."""
         return self._entity_states.get(entity_id)

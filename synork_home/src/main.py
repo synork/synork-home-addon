@@ -859,6 +859,20 @@ class SynorkAddon:
                 c.value for c in self._persona_resolution.probe_result.capabilities
             ]
 
+        # Tell the relay which HA integrations are loaded so the backend can
+        # advertise pairing capabilities (Zigbee, Z-Wave, Matter, Thread...).
+        if self._ha_bridge:
+            try:
+                services = await self._ha_bridge.get_services()
+                self._relay_client.loaded_integrations = sorted(services.keys())
+                logger.info(
+                    "Reporting %d loaded HA integrations to relay",
+                    len(self._relay_client.loaded_integrations),
+                )
+            except Exception as exc:
+                logger.warning("Could not enumerate HA services: %s", exc)
+                self._relay_client.loaded_integrations = []
+
         if self._ha_bridge:
             self._relay_client.entity_count = self._ha_bridge.entity_count
 

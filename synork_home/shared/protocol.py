@@ -106,6 +106,10 @@ class AddonHello(BaseMessage):
         default_factory=list,
         description="Hardware capabilities detected (from HardwareCapability enum values).",
     )
+    loaded_integrations: list[str] = Field(
+        default_factory=list,
+        description="Names of HA integrations / service domains currently loaded (e.g. ['zha', 'zwave_js', 'light']).",
+    )
 
 
 class AuthChallenge(BaseMessage):

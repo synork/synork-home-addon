@@ -106,6 +106,7 @@ class RelayClient:
         # Active personas and capabilities (set by main before connect)
         self.active_personas: list[str] = []
         self.capabilities: list[str] = []
+        self.loaded_integrations: list[str] = []
         self.entity_count: int = 0
 
         # Message handlers keyed by message_type
@@ -266,6 +267,7 @@ class RelayClient:
             ha_version=self.ha_version,
             active_personas=self.active_personas,
             capabilities=self.capabilities,
+            loaded_integrations=self.loaded_integrations,
         )
         await self._send_raw(hello)
 
