@@ -338,6 +338,19 @@ class HABridge:
                 fut.set_result(data)
             return
 
+        # Correlated message that we don't recognise — log so we can see why
+        # _ws_call() ends up timing out (e.g. HA returns an error envelope
+        # with a different type, or our msg_id never makes it back).
+        if msg_id is not None and msg_id in self._pending:
+            logger.warning(
+                "Unhandled HA reply for pending id=%s type=%s payload=%s",
+                msg_id, msg_type, data,
+            )
+            fut = self._pending.pop(msg_id)
+            if not fut.done():
+                fut.set_result(data)
+            return
+
         # Event subscription
         if msg_type == "event":
             event = data.get("event", {})
@@ -613,13 +626,24 @@ class HABridge:
 
         payload: dict[str, Any] = {"type": ha_type, **(request.params or {})}
         try:
-            result = await self._ws_call(payload)
-        except Exception as exc:
-            logger.error("registry mutation failed (%s.%s): %s", request.kind, request.op, exc)
+            result = await self._ws_call(payload, timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.error(
+                "registry mutation timed out (%s.%s) — HA never replied to %s; "
+                "check that the addon's HA token has admin scope",
+                request.kind, request.op, ha_type,
+            )
             return HaRegistryMutationResponse(
                 correlation_id=request.correlation_id,
                 success=False,
-                error_message=str(exc),
+                error_message=f"HA did not reply to {ha_type} within 30s (token may lack admin scope)",
+            )
+        except Exception as exc:
+            logger.error("registry mutation failed (%s.%s): %r", request.kind, request.op, exc)
+            return HaRegistryMutationResponse(
+                correlation_id=request.correlation_id,
+                success=False,
+                error_message=f"{type(exc).__name__}: {exc}",
             )
 
         success = bool(result.get("success"))

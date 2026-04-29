@@ -1,6 +1,6 @@
 # Synork Home — Home Assistant Add-on Manifest
 name: "Synork Home"
-version: "0.5.1"
+version: "0.5.2"
 slug: synork_home
 description: >-
   Synork Home — smart home hub add-on for Home Assistant.
