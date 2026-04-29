@@ -85,6 +85,7 @@ from shared.protocol import (
     AssistantInvoke,
     AssistantMode,
     AssistantResponse,
+    DeviceRegistrySnapshot,
     EntityStatePayload,
     EntityStateQuery,
     EntityStateUpdate,
@@ -815,6 +816,9 @@ class SynorkAddon:
 
         # Register state change forwarding to relay
         self._ha_bridge.on_state_change(self._forward_state_to_relay)
+        # Forward HA device/entity registry snapshots so Synork knows the
+        # device→entity mapping (devices are first-class objects in the UI).
+        self._ha_bridge.on_registry_change(self._forward_registry_to_relay)
 
         # Auto-provision HA integrations the hub persona is responsible for
         # (ZHA, Z-Wave JS). This walks HA's config flow programmatically so
@@ -852,6 +856,14 @@ class SynorkAddon:
                 await self._relay_client.send_entity_states(entities)
             except Exception as exc:
                 logger.debug("Failed to forward state to relay: %s", exc)
+
+    async def _forward_registry_to_relay(self, snapshot: DeviceRegistrySnapshot) -> None:
+        """Forward HA device/entity registry snapshots to the Synork relay."""
+        if self._relay_client and self._relay_client.connected:
+            try:
+                await self._relay_client.send(snapshot)
+            except Exception as exc:
+                logger.debug("Failed to forward registry snapshot to relay: %s", exc)
 
     # ── Phase 4: Relay ──────────────────────────────────────────────────
 
@@ -910,8 +922,26 @@ class SynorkAddon:
         self._relay_client.on("entity_state_query", self._handle_entity_query)
         self._relay_client.on("assistant_invoke", self._handle_assistant_invoke)
 
+        # Push the HA device/entity registry snapshot every time the relay
+        # (re)connects, so the backend's notion of "devices" is always fresh.
+        self._relay_client.on_connected(self._push_initial_registry_snapshot)
+
         # Start relay connection in background (auto-reconnects)
         self._relay_task = asyncio.create_task(self._relay_client.connect())
+
+    async def _push_initial_registry_snapshot(self) -> None:
+        """Build and send a fresh HA device/entity registry snapshot."""
+        if not self._ha_bridge or not self._ha_bridge.connected:
+            return
+        try:
+            snapshot = await self._ha_bridge.build_registry_snapshot()
+            await self._relay_client.send(snapshot)
+            logger.info(
+                "Pushed initial registry snapshot: %d devices, %d orphan entities",
+                len(snapshot.devices), len(snapshot.orphan_entity_ids),
+            )
+        except Exception as exc:
+            logger.warning("Failed to push initial registry snapshot: %s", exc)
 
     async def _handle_service_call(self, msg: Any) -> None:
         """Handle a ServiceCallRequest from the relay."""

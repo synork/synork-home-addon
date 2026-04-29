@@ -27,8 +27,10 @@ from typing import Any, Callable, Coroutine, Optional
 import aiohttp
 
 from shared.protocol import (
+    DeviceRegistrySnapshot,
     EntityStatePayload,
     EntityStateQuery,
+    HaDevicePayload,
     ServiceCallRequest,
     ServiceCallResponse,
 )
@@ -36,6 +38,7 @@ from shared.protocol import (
 logger = logging.getLogger("synork.ha_bridge")
 
 StateChangeCallback = Callable[[list[EntityStatePayload]], Coroutine[Any, Any, None]]
+RegistryChangeCallback = Callable[[DeviceRegistrySnapshot], Coroutine[Any, Any, None]]
 
 
 class HABridge:
@@ -65,6 +68,7 @@ class HABridge:
         self._running = False
         self._event_task: Optional[asyncio.Task] = None
         self._state_change_callbacks: list[StateChangeCallback] = []
+        self._registry_change_callbacks: list[RegistryChangeCallback] = []
         self._subscription_id: Optional[int] = None
         self._entity_states: dict[str, dict[str, Any]] = {}
 
@@ -83,6 +87,10 @@ class HABridge:
     def on_state_change(self, callback: StateChangeCallback) -> None:
         """Register a callback for entity state changes."""
         self._state_change_callbacks.append(callback)
+
+    def on_registry_change(self, callback: RegistryChangeCallback) -> None:
+        """Register a callback for HA device/entity registry snapshots."""
+        self._registry_change_callbacks.append(callback)
 
     # -- Connection --------------------------------------------------------- #
 
@@ -126,6 +134,16 @@ class HABridge:
 
         # Subscribe to state_changed events
         await self._subscribe_state_changes()
+
+        # Subscribe to device + entity registry updates so we can keep
+        # Synork's notion of "devices" in sync with HA without polling.
+        await self._subscribe_registry_changes()
+
+        # Push the initial registry snapshot to any registered callbacks.
+        try:
+            await self._broadcast_registry_snapshot()
+        except Exception as exc:
+            logger.warning("Initial registry snapshot failed: %s", exc)
 
     async def disconnect(self) -> None:
         """Disconnect from HA."""
@@ -195,6 +213,81 @@ class HABridge:
         })
         self._subscription_id = msg_id
 
+    async def _subscribe_registry_changes(self) -> None:
+        """Subscribe to HA device/entity/area registry update events."""
+        for event_type in ("device_registry_updated", "entity_registry_updated", "area_registry_updated"):
+            try:
+                await self._ws_send({"type": "subscribe_events", "event_type": event_type})
+            except Exception as exc:
+                logger.debug("Failed to subscribe to %s: %s", event_type, exc)
+
+    async def fetch_device_registry(self) -> list[dict[str, Any]]:
+        """Return the current HA device registry."""
+        result = await self._ws_call({"type": "config/device_registry/list"})
+        if not result.get("success"):
+            return []
+        return result.get("result", []) or []
+
+    async def fetch_entity_registry(self) -> list[dict[str, Any]]:
+        """Return the current HA entity registry."""
+        result = await self._ws_call({"type": "config/entity_registry/list"})
+        if not result.get("success"):
+            return []
+        return result.get("result", []) or []
+
+    async def build_registry_snapshot(self) -> DeviceRegistrySnapshot:
+        """Fetch HA device + entity registries and return a Synork snapshot."""
+        devices = await self.fetch_device_registry()
+        entities = await self.fetch_entity_registry()
+
+        # Group entities by device_id
+        by_device: dict[str, list[str]] = {}
+        orphan: list[str] = []
+        for ent in entities:
+            eid = ent.get("entity_id")
+            if not eid:
+                continue
+            # Skip our own marker entities
+            if eid.startswith(("sensor.synork_", "binary_sensor.synork_")):
+                continue
+            did = ent.get("device_id")
+            if did:
+                by_device.setdefault(did, []).append(eid)
+            else:
+                orphan.append(eid)
+
+        payloads: list[HaDevicePayload] = []
+        for dev in devices:
+            did = dev.get("id")
+            if not did:
+                continue
+            payloads.append(HaDevicePayload(
+                ha_device_id=did,
+                name=dev.get("name"),
+                name_by_user=dev.get("name_by_user"),
+                manufacturer=dev.get("manufacturer"),
+                model=dev.get("model"),
+                area_id=dev.get("area_id"),
+                entity_ids=sorted(by_device.get(did, [])),
+                disabled=bool(dev.get("disabled_by")),
+            ))
+
+        return DeviceRegistrySnapshot(
+            devices=payloads,
+            orphan_entity_ids=sorted(orphan),
+        )
+
+    async def _broadcast_registry_snapshot(self) -> None:
+        """Build the snapshot and dispatch to registered callbacks."""
+        if not self._registry_change_callbacks:
+            return
+        snapshot = await self.build_registry_snapshot()
+        for cb in self._registry_change_callbacks:
+            try:
+                await cb(snapshot)
+            except Exception as exc:
+                logger.error("Registry change callback error: %s", exc)
+
     async def _event_loop(self) -> None:
         """Listen for WS messages and dispatch events/responses."""
         try:
@@ -229,6 +322,13 @@ class HABridge:
 
             if event_type == "state_changed":
                 await self._handle_state_changed(event.get("data", {}))
+            elif event_type in ("device_registry_updated", "entity_registry_updated", "area_registry_updated"):
+                # Re-broadcast the snapshot. Best-effort — HA can fire many of
+                # these in a row, but the relay's upserts are idempotent.
+                try:
+                    await self._broadcast_registry_snapshot()
+                except Exception as exc:
+                    logger.debug("Registry snapshot dispatch failed: %s", exc)
             return
 
     async def _handle_state_changed(self, data: dict[str, Any]) -> None:

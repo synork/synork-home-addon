@@ -112,6 +112,9 @@ class RelayClient:
         # Message handlers keyed by message_type
         self._handlers: dict[str, MessageHandler] = {}
 
+        # Callbacks fired once auth succeeds (after each (re)connect).
+        self._connected_callbacks: list[Callable[[], Coroutine[Any, Any, None]]] = []
+
         # Pending service call futures keyed by correlation_id
         self._pending_calls: dict[str, asyncio.Future] = {}
 
@@ -134,6 +137,11 @@ class RelayClient:
     def on(self, message_type: str, handler: MessageHandler) -> None:
         """Register a handler for a specific message type."""
         self._handlers[message_type] = handler
+
+    def on_connected(self, callback: Callable[[], Coroutine[Any, Any, None]]) -> None:
+        """Register a callback fired after the relay handshake completes
+        (called once per (re)connect)."""
+        self._connected_callbacks.append(callback)
 
     # -- Connection lifecycle ----------------------------------------------- #
 
@@ -195,6 +203,13 @@ class RelayClient:
                 self._household_id,
                 self._household_name,
             )
+
+            # Fire post-connect callbacks (registry snapshot, etc.)
+            for cb in self._connected_callbacks:
+                try:
+                    await cb()
+                except Exception as exc:
+                    logger.error("on_connected callback failed: %s", exc, exc_info=True)
 
             # Start heartbeat
             self._last_heartbeat_recv = time.monotonic()

@@ -201,6 +201,43 @@ class EntityStateQuery(BaseMessage):
     )
 
 
+# ---------------------------------------------------------------------------
+# Device registry messages
+# ---------------------------------------------------------------------------
+
+class HaDevicePayload(BaseModel):
+    """A single Home Assistant device with its child entities."""
+    ha_device_id: str = Field(..., description="HA device_registry id.")
+    name: Optional[str] = Field(None, description="HA-assigned device name.")
+    name_by_user: Optional[str] = Field(None, description="HA user-overridden name.")
+    manufacturer: Optional[str] = Field(None, description="Device manufacturer.")
+    model: Optional[str] = Field(None, description="Device model identifier.")
+    area_id: Optional[str] = Field(None, description="HA area id this device is assigned to.")
+    entity_ids: list[str] = Field(
+        default_factory=list,
+        description="HA entity IDs that belong to this device.",
+    )
+    disabled: bool = Field(default=False, description="True if disabled in HA.")
+
+
+class DeviceRegistrySnapshot(BaseMessage):
+    """
+    Addon pushes the current HA device + entity registry mapping to the relay.
+
+    Sent on first connect, then again whenever HA fires
+    `device_registry_updated` or `entity_registry_updated` events.
+    """
+    message_type: Literal["device_registry_snapshot"] = "device_registry_snapshot"
+    devices: list[HaDevicePayload] = Field(
+        default_factory=list,
+        description="All known HA devices and their entities.",
+    )
+    orphan_entity_ids: list[str] = Field(
+        default_factory=list,
+        description="Entities not bound to any device (helpers, integrations without a device).",
+    )
+
+
 class ServiceCallRequest(BaseMessage):
     """
     Relay instructs the addon to call an HA service.
@@ -401,6 +438,7 @@ RelayMessage = Annotated[
         RelayWelcome,
         EntityStateUpdate,
         EntityStateQuery,
+        DeviceRegistrySnapshot,
         ServiceCallRequest,
         ServiceCallResponse,
         AssistantInvoke,
