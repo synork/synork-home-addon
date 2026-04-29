@@ -816,6 +816,35 @@ class SynorkAddon:
         # Register state change forwarding to relay
         self._ha_bridge.on_state_change(self._forward_state_to_relay)
 
+        # Auto-provision HA integrations the hub persona is responsible for
+        # (ZHA, Z-Wave JS). This walks HA's config flow programmatically so
+        # the user doesn't have to add the integration manually before they
+        # can pair Zigbee/Z-Wave devices through Synork.
+        await self._auto_provision_hub_integrations()
+
+    async def _auto_provision_hub_integrations(self) -> None:
+        """Run hub-persona auto-provisioning if a hub persona is active."""
+        if not self._ha_bridge or not self._persona_impl:
+            return
+        hub: Optional[HubPersona] = None
+        if isinstance(self._persona_impl, HubPersona):
+            hub = self._persona_impl
+        else:
+            getter = getattr(self._persona_impl, "get_sub_persona", None)
+            if callable(getter):
+                try:
+                    candidate = getter(Persona.HUB)
+                    if isinstance(candidate, HubPersona):
+                        hub = candidate
+                except Exception:
+                    hub = None
+        if hub is None:
+            return
+        try:
+            await hub.auto_provision_ha(self._ha_bridge)
+        except Exception as exc:
+            logger.warning("Hub auto-provisioning failed: %s", exc)
+
     async def _forward_state_to_relay(self, entities: list[EntityStatePayload]) -> None:
         """Forward HA state changes to the Synork relay."""
         if self._relay_client and self._relay_client.connected:

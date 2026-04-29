@@ -278,6 +278,119 @@ class HABridge:
             return {}
         return result.get("result", {}) or {}
 
+    # -- Config flow / integration provisioning ---------------------------- #
+
+    async def list_config_entries(self, domain: Optional[str] = None) -> list[dict[str, Any]]:
+        """Return the list of configured integrations (optionally filtered by domain)."""
+        payload: dict[str, Any] = {"type": "config_entries/get"}
+        if domain:
+            payload["domain"] = domain
+        result = await self._ws_call(payload)
+        if not result.get("success"):
+            return []
+        return result.get("result", []) or []
+
+    async def has_config_entry(self, domain: str) -> bool:
+        """True if HA already has at least one config entry for `domain`."""
+        try:
+            entries = await self.list_config_entries(domain)
+            return len(entries) > 0
+        except Exception:
+            return False
+
+    async def start_config_flow(
+        self,
+        handler: str,
+        show_advanced_options: bool = True,
+    ) -> dict[str, Any]:
+        """Initiate a config flow for an integration. Returns the first step payload."""
+        result = await self._ws_call({
+            "type": "config_entries/flow/init",
+            "handler": handler,
+            "show_advanced_options": show_advanced_options,
+        })
+        if not result.get("success"):
+            raise RuntimeError(f"flow/init failed for {handler}: {result.get('error')}")
+        return result.get("result", {}) or {}
+
+    async def submit_config_flow_step(
+        self,
+        flow_id: str,
+        user_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Submit user input for the current config flow step."""
+        result = await self._ws_call({
+            "type": "config_entries/flow/configure",
+            "flow_id": flow_id,
+            "user_input": user_input,
+        })
+        if not result.get("success"):
+            raise RuntimeError(f"flow/configure failed: {result.get('error')}")
+        return result.get("result", {}) or {}
+
+    async def abort_config_flow(self, flow_id: str) -> None:
+        """Best-effort abort of a config flow we couldn't complete."""
+        try:
+            await self._ws_call({
+                "type": "config_entries/flow/abort",
+                "flow_id": flow_id,
+            })
+        except Exception:
+            pass
+
+    async def auto_complete_config_flow(
+        self,
+        handler: str,
+        step_inputs: dict[str, dict[str, Any]],
+        default_input: Optional[dict[str, Any]] = None,
+        max_steps: int = 8,
+    ) -> bool:
+        """Walk a config flow to completion using pre-supplied per-step inputs.
+
+        ``step_inputs`` maps step_id -> user_input dict. ``default_input`` is
+        used for any step we don't recognise. Returns True when the flow ends
+        in ``create_entry``, False otherwise (the flow is aborted on failure
+        so HA isn't left with a half-configured entry).
+        """
+        try:
+            step = await self.start_config_flow(handler)
+        except Exception as exc:
+            logger.warning("Could not start %s config flow: %s", handler, exc)
+            return False
+
+        flow_id = step.get("flow_id") or ""
+        if not flow_id:
+            return step.get("type") == "create_entry"
+
+        for _ in range(max_steps):
+            step_type = step.get("type")
+            if step_type == "create_entry":
+                return True
+            if step_type == "abort":
+                logger.info(
+                    "%s config flow aborted at step %s: %s",
+                    handler, step.get("step_id"), step.get("reason"),
+                )
+                return False
+            if step_type != "form":
+                # Unknown / external_step / progress — bail out cleanly
+                await self.abort_config_flow(flow_id)
+                return False
+
+            step_id = step.get("step_id") or ""
+            user_input = step_inputs.get(step_id, default_input or {})
+            try:
+                step = await self.submit_config_flow_step(flow_id, user_input)
+            except Exception as exc:
+                logger.warning(
+                    "%s config flow step %s failed: %s", handler, step_id, exc,
+                )
+                await self.abort_config_flow(flow_id)
+                return False
+
+        await self.abort_config_flow(flow_id)
+        return False
+
     async def get_entity_state(self, entity_id: str) -> Optional[dict[str, Any]]:
         """Get the cached state of a specific entity."""
         return self._entity_states.get(entity_id)
