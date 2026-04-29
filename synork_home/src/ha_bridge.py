@@ -30,7 +30,10 @@ from shared.protocol import (
     DeviceRegistrySnapshot,
     EntityStatePayload,
     EntityStateQuery,
+    HaAreaPayload,
     HaDevicePayload,
+    HaRegistryMutationRequest,
+    HaRegistryMutationResponse,
     ServiceCallRequest,
     ServiceCallResponse,
 )
@@ -235,10 +238,18 @@ class HABridge:
             return []
         return result.get("result", []) or []
 
+    async def fetch_area_registry(self) -> list[dict[str, Any]]:
+        """Return the current HA area (room) registry."""
+        result = await self._ws_call({"type": "config/area_registry/list"})
+        if not result.get("success"):
+            return []
+        return result.get("result", []) or []
+
     async def build_registry_snapshot(self) -> DeviceRegistrySnapshot:
-        """Fetch HA device + entity registries and return a Synork snapshot."""
+        """Fetch HA device + entity + area registries and return a Synork snapshot."""
         devices = await self.fetch_device_registry()
         entities = await self.fetch_entity_registry()
+        areas_raw = await self.fetch_area_registry()
 
         # Group entities by device_id
         by_device: dict[str, list[str]] = {}
@@ -275,6 +286,18 @@ class HABridge:
         return DeviceRegistrySnapshot(
             devices=payloads,
             orphan_entity_ids=sorted(orphan),
+            areas=[
+                HaAreaPayload(
+                    area_id=a.get("area_id") or a.get("id") or "",
+                    name=a.get("name") or "",
+                    icon=a.get("icon"),
+                    picture=a.get("picture"),
+                    floor_id=a.get("floor_id"),
+                    aliases=list(a.get("aliases") or []),
+                )
+                for a in areas_raw
+                if (a.get("area_id") or a.get("id"))
+            ],
         )
 
     async def _broadcast_registry_snapshot(self) -> None:
@@ -563,6 +586,58 @@ class HABridge:
                 success=False,
                 error_message=str(exc),
             )
+
+    # -- HA registry mutations (areas, devices, entities) ------------------ #
+
+    # Maps (kind, op) -> HA WebSocket command type.
+    _REGISTRY_COMMAND: dict[tuple[str, str], str] = {
+        ("area", "create"): "config/area_registry/create",
+        ("area", "update"): "config/area_registry/update",
+        ("area", "delete"): "config/area_registry/delete",
+        ("device", "update"): "config/device_registry/update",
+        ("entity", "update"): "config/entity_registry/update",
+    }
+
+    async def handle_registry_mutation(
+        self,
+        request: HaRegistryMutationRequest,
+    ) -> HaRegistryMutationResponse:
+        """Translate a HaRegistryMutationRequest into the matching HA WS call."""
+        ha_type = self._REGISTRY_COMMAND.get((request.kind, request.op))
+        if not ha_type:
+            return HaRegistryMutationResponse(
+                correlation_id=request.correlation_id,
+                success=False,
+                error_message=f"unsupported registry op: {request.kind}.{request.op}",
+            )
+
+        payload: dict[str, Any] = {"type": ha_type, **(request.params or {})}
+        try:
+            result = await self._ws_call(payload)
+        except Exception as exc:
+            logger.error("registry mutation failed (%s.%s): %s", request.kind, request.op, exc)
+            return HaRegistryMutationResponse(
+                correlation_id=request.correlation_id,
+                success=False,
+                error_message=str(exc),
+            )
+
+        success = bool(result.get("success"))
+        body = result.get("result") or {}
+        err = None
+        if not success:
+            err_obj = result.get("error") or {}
+            err = str(err_obj.get("message") or err_obj or "unknown HA error")
+
+        # HA fires *_registry_updated events on success which already
+        # re-broadcasts the snapshot via _event_loop, so we don't need
+        # to push one here.
+        return HaRegistryMutationResponse(
+            correlation_id=request.correlation_id,
+            success=success,
+            error_message=err,
+            result=body if isinstance(body, dict) else {"value": body},
+        )
 
     async def handle_entity_state_query(self, query: EntityStateQuery) -> list[EntityStatePayload]:
         """Respond to an EntityStateQuery from the relay with current states."""

@@ -205,6 +205,16 @@ class EntityStateQuery(BaseMessage):
 # Device registry messages
 # ---------------------------------------------------------------------------
 
+class HaAreaPayload(BaseModel):
+    """A single Home Assistant area (room)."""
+    area_id: str = Field(..., description="HA area_registry id.")
+    name: str = Field(..., description="Human-readable area name.")
+    icon: Optional[str] = Field(None, description="MDI icon name (e.g. 'mdi:sofa').")
+    picture: Optional[str] = Field(None, description="URL/path to area picture.")
+    floor_id: Optional[str] = Field(None, description="HA floor id this area belongs to.")
+    aliases: list[str] = Field(default_factory=list, description="Alternate names for voice / search.")
+
+
 class HaDevicePayload(BaseModel):
     """A single Home Assistant device with its child entities."""
     ha_device_id: str = Field(..., description="HA device_registry id.")
@@ -235,6 +245,10 @@ class DeviceRegistrySnapshot(BaseMessage):
     orphan_entity_ids: list[str] = Field(
         default_factory=list,
         description="Entities not bound to any device (helpers, integrations without a device).",
+    )
+    areas: list[HaAreaPayload] = Field(
+        default_factory=list,
+        description="All known HA areas (rooms). Empty list on legacy addons.",
     )
 
 
@@ -427,6 +441,52 @@ class ProtocolError(BaseMessage):
 
 
 # ---------------------------------------------------------------------------
+# HA registry mutations (areas, devices, entities) — generic RPC
+# ---------------------------------------------------------------------------
+
+# kind = which HA registry to mutate; op = create / update / delete.
+HaRegistryKind = Literal["area", "device", "entity"]
+HaRegistryOp = Literal["create", "update", "delete"]
+
+
+class HaRegistryMutationRequest(BaseMessage):
+    """
+    Relay → addon: mutate the HA area / device / entity registry.
+
+    Lets Synork drive HA's config without users touching HA's frontend.
+    The addon translates this into the matching ``config/<kind>_registry/<op>``
+    HA WebSocket call. ``params`` is the body of that HA call (e.g.
+    ``{"name": "Living room"}`` for area.create, ``{"area_id": "abc"}``
+    for a device.update area-assignment).
+    """
+    message_type: Literal["ha_registry_mutation_request"] = "ha_registry_mutation_request"
+    correlation_id: str = Field(
+        default_factory=lambda: uuid.uuid4().hex,
+        description="Correlates this request with its HaRegistryMutationResponse.",
+    )
+    kind: HaRegistryKind = Field(..., description="Which HA registry to touch.")
+    op: HaRegistryOp = Field(..., description="create / update / delete.")
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Body of the HA WS call (area_id, device_id, entity_id, name, ...).",
+    )
+    requesting_user_id: str = Field(..., description="Synork user ID for audit / permission.")
+    household_id: str = Field(..., description="Household context for permission checks.")
+
+
+class HaRegistryMutationResponse(BaseMessage):
+    """Addon → relay: outcome of a HaRegistryMutationRequest."""
+    message_type: Literal["ha_registry_mutation_response"] = "ha_registry_mutation_response"
+    correlation_id: str = Field(..., description="Matches the request.")
+    success: bool = Field(..., description="True if HA accepted the mutation.")
+    error_message: Optional[str] = Field(None, description="Error details if success is False.")
+    result: dict[str, Any] = Field(
+        default_factory=dict,
+        description="HA's response payload (e.g. the created area row).",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Discriminated union — the single type to use for deserialization
 # ---------------------------------------------------------------------------
 
@@ -441,6 +501,8 @@ RelayMessage = Annotated[
         DeviceRegistrySnapshot,
         ServiceCallRequest,
         ServiceCallResponse,
+        HaRegistryMutationRequest,
+        HaRegistryMutationResponse,
         AssistantInvoke,
         AssistantResponse,
         AssistantStreamChunk,

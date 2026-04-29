@@ -90,6 +90,7 @@ from shared.protocol import (
     EntityStateQuery,
     EntityStateUpdate,
     ServiceCallRequest,
+    HaRegistryMutationRequest,
     VoiceQueryFromAssistant,
     VoiceResponseToAssistant,
 )
@@ -921,6 +922,7 @@ class SynorkAddon:
         self._relay_client.on("service_call_request", self._handle_service_call)
         self._relay_client.on("entity_state_query", self._handle_entity_query)
         self._relay_client.on("assistant_invoke", self._handle_assistant_invoke)
+        self._relay_client.on("ha_registry_mutation_request", self._handle_registry_mutation)
 
         # Push the HA device/entity registry snapshot every time the relay
         # (re)connects, so the backend's notion of "devices" is always fresh.
@@ -951,6 +953,17 @@ class SynorkAddon:
             return
 
         response = await self._ha_bridge.handle_service_call_request(msg)
+        if self._relay_client and self._relay_client.connected:
+            await self._relay_client.send(response)
+
+    async def _handle_registry_mutation(self, msg: Any) -> None:
+        """Handle a HaRegistryMutationRequest from the relay (area/device/entity edits)."""
+        if not isinstance(msg, HaRegistryMutationRequest):
+            return
+        if not self._ha_bridge:
+            return
+
+        response = await self._ha_bridge.handle_registry_mutation(msg)
         if self._relay_client and self._relay_client.connected:
             await self._relay_client.send(response)
 
