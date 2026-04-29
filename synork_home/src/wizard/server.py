@@ -36,6 +36,11 @@ from aiohttp import web
 from .persistence import HubConfig, save_hub_config
 from .strings import get_strings
 
+try:
+    from _version import ADDON_VERSION
+except ImportError:  # pragma: no cover - addon-only import
+    ADDON_VERSION = "0.0.0"
+
 logger = logging.getLogger("synork.wizard.server")
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -187,6 +192,7 @@ class WizardServer:
             "strings": get_strings(self._language),
             "signed_in": self._bearer_token is not None,
             "signed_in_user": self._signed_in_user,
+            "addon_version": ADDON_VERSION,
         })
 
     # ── Auth proxy ──

@@ -27,6 +27,11 @@ from typing import Optional
 
 import aiohttp
 
+try:
+    from _version import ADDON_VERSION
+except ImportError:  # pragma: no cover - addon-only import
+    ADDON_VERSION = "0.0.0"
+
 logger = logging.getLogger("synork.frontend.installer")
 
 # Source paths (inside the addon container)
@@ -77,6 +82,15 @@ class FrontendInstaller:
             installed_count += 1
             logger.info("Theme installed: synork-home.yaml")
 
+        # 1a. Make sure HA actually loads themes from /config/themes/.
+        # Without `frontend: themes: !include_dir_merge_named themes/`
+        # in configuration.yaml the theme YAML is silently ignored and
+        # the user can't pick "Synork Home" from the theme picker.
+        try:
+            self._ensure_themes_enabled()
+        except Exception as exc:
+            logger.warning("Could not patch configuration.yaml for themes: %s", exc)
+
         # 2. JS Patcher
         if self._enable_patcher:
             if self._copy_if_changed(_PATCHER_SRC, _SYNORK_WWW / "synork-patcher.js"):
@@ -95,6 +109,7 @@ class FrontendInstaller:
             await self._register_theme()
             if self._enable_patcher:
                 await self._register_patcher()
+            await self._publish_version_sensor()
         except Exception as exc:
             logger.warning("Failed to register with HA API (non-fatal): %s", exc)
 
@@ -176,6 +191,43 @@ class FrontendInstaller:
 
             logger.info("Theme 'Synork Home' set as default")
 
+    async def _publish_version_sensor(self) -> None:
+        """Publish a sensor.synork_home_version entity in HA.
+
+        Uses the REST API ``POST /api/states/{entity_id}``. The state value
+        is the addon version string; attributes carry friendly_name and
+        an icon so the entity looks polished in the HA UI.
+        """
+        if not self._ha_token:
+            return
+        entity_id = "sensor.synork_home_version"
+        body = {
+            "state": ADDON_VERSION,
+            "attributes": {
+                "friendly_name": "Synork Home Version",
+                "icon": "mdi:home-assistant",
+                "source": "synork_home_addon",
+            },
+        }
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {self._ha_token}",
+                "Content-Type": "application/json",
+            }
+            async with session.post(
+                f"{_HA_API}/states/{entity_id}",
+                headers=headers,
+                json=body,
+            ) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    logger.warning(
+                        "Could not publish %s (HTTP %s): %s",
+                        entity_id, resp.status, text[:200],
+                    )
+                else:
+                    logger.info("Published %s = %s", entity_id, ADDON_VERSION)
+
     async def _register_patcher(self) -> None:
         """Register the JS patcher as an extra module URL.
 
@@ -226,3 +278,43 @@ class FrontendInstaller:
 
         config_path.write_text(content)
         logger.info("Patcher registered in configuration.yaml")
+
+    def _ensure_themes_enabled(self) -> None:
+        """Make sure configuration.yaml loads /config/themes/ as merged themes.
+
+        HA only sees theme YAMLs if the user opted in by adding
+        ``frontend: themes: !include_dir_merge_named themes/``. Without
+        this line, the theme picker won't list "Synork Home" no matter
+        how many YAMLs are in /config/themes/.
+
+        We patch configuration.yaml exactly once (idempotent via marker).
+        """
+        config_path = _CONFIG_DIR / "configuration.yaml"
+        marker = "# synork-themes"
+
+        if not config_path.exists():
+            return
+
+        content = config_path.read_text()
+
+        # Already patched, or user already configured themes manually
+        if marker in content or "themes:" in content:
+            return
+
+        if "frontend:" in content:
+            content = content.replace(
+                "frontend:",
+                f"frontend:\n  themes: !include_dir_merge_named themes  {marker}",
+                1,
+            )
+        else:
+            content += (
+                f"\nfrontend:\n"
+                f"  themes: !include_dir_merge_named themes  {marker}\n"
+            )
+
+        config_path.write_text(content)
+        logger.info(
+            "Themes enabled in configuration.yaml \u2014 restart HA Core "
+            "to pick up the Synork Home theme"
+        )

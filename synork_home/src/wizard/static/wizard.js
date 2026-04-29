@@ -105,7 +105,12 @@
   }
 
   function setDeviceTag(id) {
-    if (deviceIdTag && id) deviceIdTag.textContent = id;
+    if (!deviceIdTag) return;
+    const version = (state && state.addon_version) ? `v${state.addon_version}` : "";
+    const parts = [];
+    if (id) parts.push(id);
+    if (version) parts.push(version);
+    deviceIdTag.textContent = parts.join(" \u00b7 ");
   }
 
   // ── Reusable bits ──────────────────────────────────────────────────

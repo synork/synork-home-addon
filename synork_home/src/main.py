@@ -59,6 +59,7 @@ from assistant.stt import STTEngine
 from assistant.tts_router import TTSRouter
 from assistant.turn_taking import TurnTakingManager
 from frontend.install_frontend import FrontendInstaller
+from _version import ADDON_VERSION
 
 # Hub-side satellite management (Session 16)
 from satellite_broker import SatelliteBroker
@@ -728,7 +729,7 @@ class SynorkAddon:
         if network.ip_address and self.config.is_hub:
             self._mdns = MDNSAdvertiser(
                 device_id=self.config.device_id,
-                addon_version="0.1.0",
+                addon_version=ADDON_VERSION,
                 edition=self.config.mode,
                 satellite_port=self.config.satellite_port,
             )
@@ -888,7 +889,7 @@ class SynorkAddon:
             relay_url=self.config.relay_url,
             device_id=self.config.device_id,
             device_secret=self.config.device_secret,
-            addon_version="0.1.0",
+            addon_version=ADDON_VERSION,
             ha_version=ha_version,
         )
 
