@@ -280,10 +280,24 @@ class HardwareProbe:
     # -- Audio detection ---------------------------------------------------- #
 
     async def _detect_audio(self) -> list[DetectedHardware]:
-        """Detect audio input (microphone) and output (speaker) devices."""
+        """Detect audio input (microphone) and output (speaker) devices.
+
+        Tries two strategies in order:
+          1. ``arecord -l`` / ``aplay -l`` (ALSA userspace tools).
+          2. Direct enumeration of ``/dev/snd/pcmC*D*c`` (capture) and
+             ``pcmC*D*p`` (playback) device nodes — works even when
+             alsa-utils isn't installed, and matches whatever the kernel
+             actually exposes (jacks, USB, HDMI, etc.).
+
+        The kernel-node fallback is what makes onboard 3.5 mm jack mics
+        reliably detected when ``/dev/snd`` is mapped through to the
+        container.
+        """
         devices: list[DetectedHardware] = []
 
         capture_devices = await self._list_alsa_devices("capture")
+        if not capture_devices:
+            capture_devices = self._list_snd_nodes("capture")
         for name, path in capture_devices:
             devices.append(DetectedHardware(
                 capability=HardwareCapability.MICROPHONE,
@@ -292,6 +306,8 @@ class HardwareProbe:
             ))
 
         playback_devices = await self._list_alsa_devices("playback")
+        if not playback_devices:
+            playback_devices = self._list_snd_nodes("playback")
         for name, path in playback_devices:
             devices.append(DetectedHardware(
                 capability=HardwareCapability.AUDIO_OUTPUT,
@@ -299,10 +315,71 @@ class HardwareProbe:
                 device_name=name,
             ))
 
+        if not capture_devices:
+            logger.warning(
+                "No microphone devices found via arecord or /dev/snd; "
+                "check that /dev/snd is mapped to the container and "
+                "alsa-utils is installed (apk add alsa-utils)"
+            )
         return devices
 
+    def _list_snd_nodes(self, direction: str) -> list[tuple[str, str]]:
+        """Enumerate /dev/snd/pcmC*D*[cp] kernel nodes directly.
+
+        Cross-references /proc/asound/cards to attach a friendly name to
+        each device when available.
+        """
+        suffix = "c" if direction == "capture" else "p"
+        snd_dir = Path("/dev/snd")
+        if not snd_dir.exists():
+            return []
+
+        # Pre-build {card_num: friendly_name} from /proc/asound/cards
+        names: dict[int, str] = {}
+        proc_cards = Path("/proc/asound/cards")
+        if proc_cards.exists():
+            try:
+                text = proc_cards.read_text()
+            except OSError:
+                text = ""
+            # Lines like: " 0 [PCH            ]: HDA-Intel - HDA Intel PCH"
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or not line[0].isdigit():
+                    continue
+                try:
+                    card_num = int(line.split()[0])
+                except (ValueError, IndexError):
+                    continue
+                # Friendly bit after the closing bracket
+                if "]" in line and ":" in line:
+                    friendly = line.split("]", 1)[1].split(":", 1)[1].strip()
+                    names[card_num] = friendly or f"card {card_num}"
+                else:
+                    names[card_num] = f"card {card_num}"
+
+        results: list[tuple[str, str]] = []
+        for node in sorted(snd_dir.glob(f"pcmC*D*{suffix}")):
+            stem = node.name  # e.g. pcmC0D0c
+            try:
+                card_num = int(stem[4:stem.index("D")])
+            except (ValueError, IndexError):
+                card_num = -1
+            friendly = names.get(card_num, stem)
+            results.append((friendly, str(node)))
+        return results
+
     async def _list_alsa_devices(self, direction: str) -> list[tuple[str, str]]:
-        """List ALSA devices for a direction (capture or playback)."""
+        """List ALSA devices for a direction (capture or playback).
+
+        Parses ``arecord -l`` / ``aplay -l`` output, which looks like::
+
+            card 0: PCH [HDA Intel PCH], device 0: ALC3220 Analog [...]
+            card 1: USB [Generic USB Audio], device 0: USB Audio [USB Audio]
+
+        Captures both card AND device numbers — the previous version
+        hardcoded ``D0`` and missed devices on non-zero subdevs.
+        """
         cmd = "arecord" if direction == "capture" else "aplay"
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -315,17 +392,32 @@ class HardwareProbe:
                 return []
 
             results: list[tuple[str, str]] = []
-            for line in stdout.decode().splitlines():
-                if line.startswith("card "):
-                    parts = line.split(":")
-                    if len(parts) >= 2:
-                        card_num = line.split()[1].rstrip(":")
-                        name = parts[1].strip().split("[")[0].strip() if "[" in parts[1] else parts[1].strip()
-                        suffix = "c" if direction == "capture" else "p"
-                        dev_path = f"/dev/snd/pcmC{card_num}D0{suffix}"
-                        results.append((name, dev_path))
+            suffix = "c" if direction == "capture" else "p"
+            for line in stdout.decode(errors="replace").splitlines():
+                if not line.startswith("card "):
+                    continue
+                # "card 0: PCH [HDA Intel PCH], device 0: ALC3220 Analog [...]"
+                try:
+                    card_part, device_part = line.split(", device ", 1)
+                except ValueError:
+                    continue
+                try:
+                    card_num = int(card_part.split()[1].rstrip(":"))
+                    device_num = int(device_part.split(":", 1)[0])
+                except (ValueError, IndexError):
+                    continue
+                # Friendly name = bit after first "[" inside the second segment
+                desc = device_part.split(":", 1)[1].strip() if ":" in device_part else device_part.strip()
+                if "[" in desc:
+                    desc = desc.split("[", 1)[0].strip() or desc
+                dev_path = f"/dev/snd/pcmC{card_num}D{device_num}{suffix}"
+                results.append((desc, dev_path))
             return results
         except FileNotFoundError:
+            logger.debug("%s not installed, falling back to /dev/snd enumeration", cmd)
+            return []
+        except Exception as exc:  # never let a parse error swallow the mic
+            logger.warning("%s -l parse failed: %r", cmd, exc)
             return []
 
     # -- Network detection -------------------------------------------------- #

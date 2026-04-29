@@ -991,69 +991,110 @@ class SynorkAddon:
     # ── Phase 5: Assistant Pipeline ─────────────────────────────────────
 
     async def _setup_assistant_pipeline(self) -> None:
-        """Start the voice assistant pipeline if satellite persona is active."""
+        """Start the voice assistant pipeline if a microphone is available.
+
+        Voice is the *primary* function for the Satellite persona, but a
+        Hub with an attached mic should also offer Assist locally. The
+        gate is therefore the MICROPHONE capability, not the persona.
+        """
         if not self.config.assistant_pipeline:
             logger.info("Phase 5: Assistant pipeline disabled in config")
             return
 
-        # Check if satellite persona is active (has microphone)
+        # Check the actual hardware probe result for a real microphone.
+        # Fall back to the persona check only if we somehow have no probe
+        # result (defensive — probe runs in Phase 2).
         has_mic = False
-        if self._persona_resolution:
+        mic_devices: list[str] = []
+        if self._persona_resolution and self._persona_resolution.probe_result:
+            for cap in self._persona_resolution.probe_result.capabilities:
+                if cap.value == "microphone":
+                    has_mic = True
+                    break
+            mic_devices = [
+                f"{d.device_name} ({d.device_path})"
+                for d in self._persona_resolution.probe_result.devices
+                if d.capability.value == "microphone"
+            ]
+        elif self._persona_resolution:
+            # No probe but persona resolution exists \u2014 fall back to persona.
             has_mic = Persona.SATELLITE in self._persona_resolution.active_personas
 
         if not has_mic:
-            logger.info("Phase 5: No microphone detected — assistant pipeline skipped")
+            logger.info(
+                "Phase 5: No microphone detected \u2014 assistant pipeline skipped "
+                "(check that /dev/snd is mapped through and contains a "
+                "pcmC*D*c capture node)"
+            )
             return
 
-        logger.info("Phase 5: Starting assistant pipeline")
+        logger.info(
+            "Phase 5: Starting assistant pipeline (mic: %s)",
+            ", ".join(mic_devices) or "detected",
+        )
 
         mock = self.config.mock_hardware
 
-        # Initialize pipeline components
-        wake_word = WakeWordDetector(
-            model_name=self.config.wake_word,
-            mock_mode=mock,
-        )
+        try:
+            # Initialize pipeline components
+            wake_word = WakeWordDetector(
+                model_name=self.config.wake_word,
+                mock_mode=mock,
+            )
 
-        vad = VADProcessor(
-            sensitivity=0.5,
-            mock_mode=mock,
-        )
+            vad = VADProcessor(
+                sensitivity=0.5,
+                mock_mode=mock,
+            )
 
-        stt_backend = "local" if self.config.local_stt else "remote"
-        stt = STTEngine(
-            backend=stt_backend,
-            language=self.config.language,
-            relay_url=self.config.relay_api_url,
-            mock_mode=mock,
-        )
-        await stt.load()
+            stt_backend = "local" if self.config.local_stt else "remote"
+            stt = STTEngine(
+                backend=stt_backend,
+                language=self.config.language,
+                relay_url=self.config.relay_api_url,
+                mock_mode=mock,
+            )
+            await stt.load()
 
-        tts = TTSRouter(
-            provider=self.config.tts_provider,
-            language=self.config.language,
-            relay_url=self.config.relay_api_url,
-            mock_mode=mock,
-        )
-        await tts.initialize()
+            tts = TTSRouter(
+                provider=self.config.tts_provider,
+                language=self.config.language,
+                relay_url=self.config.relay_api_url,
+                mock_mode=mock,
+            )
+            await tts.initialize()
 
-        # Create pipeline
-        self._pipeline = TurnTakingManager(
-            wake_word=wake_word,
-            vad=vad,
-            stt=stt,
-            tts=tts,
-            language=self.config.language,
-            mock_mode=mock,
-        )
+            # Create pipeline
+            self._pipeline = TurnTakingManager(
+                wake_word=wake_word,
+                vad=vad,
+                stt=stt,
+                tts=tts,
+                language=self.config.language,
+                mock_mode=mock,
+            )
 
-        # Set up invocation callback (routes differently in hub vs assistant mode)
-        if self.config.is_assistant:
-            self._pipeline.set_invoke_callback(self._invoke_assistant_via_hub)
-        else:
-            self._pipeline.set_invoke_callback(self._invoke_assistant_via_relay)
+            # Set up invocation callback (routes differently in hub vs assistant mode)
+            if self.config.is_assistant:
+                self._pipeline.set_invoke_callback(self._invoke_assistant_via_hub)
+            else:
+                self._pipeline.set_invoke_callback(self._invoke_assistant_via_relay)
 
-        await self._pipeline.start()
+            await self._pipeline.start()
+            logger.info("Phase 5: Assistant pipeline started successfully")
+        except Exception as exc:
+            logger.error(
+                "Phase 5: Assistant pipeline failed to start: %r",
+                exc,
+                exc_info=True,
+            )
+            # Surface a hint about the most common cause
+            if "alsa" in str(exc).lower() or "pcm" in str(exc).lower():
+                logger.error(
+                    "Phase 5 hint: ALSA error \u2014 verify the addon has "
+                    "/dev/snd mapped through and the user has audio group access"
+                )
+            self._pipeline = None
 
     async def _invoke_assistant_via_hub(
         self,
