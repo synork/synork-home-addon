@@ -16,6 +16,13 @@ from typing import Any, Callable, Coroutine, Optional
 
 from shared.persona_schema import PersonaConfig, PersonaServiceState
 
+try:
+    from supervisor import SupervisorClient
+except ImportError:  # pragma: no cover
+    SupervisorClient = None  # type: ignore[assignment]
+
+from ..addon_slugs import SATELLITE_SERVICE_TO_ADDON_SLUG
+
 logger = logging.getLogger("synork.persona.satellite")
 
 
@@ -132,3 +139,43 @@ class SatellitePersona:
 
         else:
             logger.warning("Satellite: unknown service %s", name)
+
+    async def auto_provision_ha(self, ha_bridge: Any) -> dict[str, bool]:
+        """Auto-install Wyoming-protocol Supervisor add-ons for the voice
+        pipeline (faster-whisper STT, openWakeWord, etc.).
+
+        These add-ons advertise themselves over mDNS as ``_wyoming._tcp``
+        once they're running, and HA's ``wyoming`` integration auto-creates
+        a config entry for each \u2014 no config flow walking required from us.
+        Same idempotency guarantees as :class:`HubPersona.auto_provision_ha`:
+        already-installed add-ons are no-ops; failures log and return False
+        so the assistant pipeline stays usable in degraded form.
+        """
+        results: dict[str, bool] = {}
+        if not self._config or SupervisorClient is None:
+            return results
+
+        client = SupervisorClient()
+        if not client.available:
+            return results
+
+        try:
+            for svc in self._config.services:
+                slug = SATELLITE_SERVICE_TO_ADDON_SLUG.get(svc.service_name)
+                if not slug:
+                    continue
+                ok = await client.ensure_addon_running(slug)
+                results[svc.service_name] = ok
+                if not ok:
+                    logger.warning(
+                        "Satellite: Supervisor add-on %s for %s could not be "
+                        "auto-started \u2014 voice pipeline service may degrade",
+                        slug, svc.service_name,
+                    )
+        finally:
+            await client.close()
+
+        ok_keys = [k for k, v in results.items() if v]
+        if ok_keys:
+            logger.info("Satellite auto-provisioned Wyoming add-ons: %s", ok_keys)
+        return results

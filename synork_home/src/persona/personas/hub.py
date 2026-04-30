@@ -22,16 +22,9 @@ try:
 except ImportError:  # pragma: no cover
     SupervisorClient = None  # type: ignore[assignment]
 
-logger = logging.getLogger("synork.persona.hub")
+from ..addon_slugs import HUB_SERVICE_TO_ADDON_SLUG as _SERVICE_TO_ADDON_SLUG
 
-# Mapping persona-service -> Supervisor add-on slug that must be running for
-# the matching HA integration to actually work. Slugs are stable for the
-# core add-on repository (always present in Supervisor installs).
-_SERVICE_TO_ADDON_SLUG: dict[str, str] = {
-    "zwave_js": "core_zwave_js",
-    "otbr": "core_openthread_border_router",
-    "matter": "core_matter_server",
-}
+logger = logging.getLogger("synork.persona.hub")
 
 
 class HubPersona:

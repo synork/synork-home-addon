@@ -15,6 +15,13 @@ from typing import Any, Optional
 
 from shared.persona_schema import PersonaConfig, PersonaServiceState
 
+try:
+    from supervisor import SupervisorClient
+except ImportError:  # pragma: no cover
+    SupervisorClient = None  # type: ignore[assignment]
+
+from ..addon_slugs import SPEAKER_SERVICE_TO_ADDON_SLUG
+
 logger = logging.getLogger("synork.persona.speaker")
 
 
@@ -93,3 +100,39 @@ class SpeakerPersona:
 
         else:
             logger.warning("Speaker: unknown service %s", name)
+
+    async def auto_provision_ha(self, ha_bridge: Any) -> dict[str, bool]:
+        """Auto-install Wyoming TTS Supervisor add-on (Piper).
+
+        Same pattern as :meth:`SatellitePersona.auto_provision_ha`: install +
+        start the matching managed add-on; HA's ``wyoming`` integration then
+        auto-discovers it via mDNS and registers a TTS service.
+        """
+        results: dict[str, bool] = {}
+        if not self._config or SupervisorClient is None:
+            return results
+
+        client = SupervisorClient()
+        if not client.available:
+            return results
+
+        try:
+            for svc in self._config.services:
+                slug = SPEAKER_SERVICE_TO_ADDON_SLUG.get(svc.service_name)
+                if not slug:
+                    continue
+                ok = await client.ensure_addon_running(slug)
+                results[svc.service_name] = ok
+                if not ok:
+                    logger.warning(
+                        "Speaker: Supervisor add-on %s for %s could not be "
+                        "auto-started — TTS will fall back to cloud providers",
+                        slug, svc.service_name,
+                    )
+        finally:
+            await client.close()
+
+        ok_keys = [k for k, v in results.items() if v]
+        if ok_keys:
+            logger.info("Speaker auto-provisioned Wyoming add-ons: %s", ok_keys)
+        return results
