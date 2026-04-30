@@ -205,6 +205,12 @@ class SynorkAddon:
         self._relay_task: Optional[asyncio.Task] = None
         self._assistant_task: Optional[asyncio.Task] = None
 
+        # Tracks which voice slugs (stt / wake_word / tts) HA's Wyoming
+        # add-ons are currently serving. When all three are up the local
+        # in-process voice pipeline (which is a TODO stub) is skipped and
+        # voice flows through HA Assist instead. Keyed by service name.
+        self._wyoming_voice_provisioned: dict[str, bool] = {}
+
     async def start(self) -> None:
         """Start the addon — the main lifecycle method."""
         self._running = True
@@ -853,12 +859,20 @@ class SynorkAddon:
             if not callable(provisioner):
                 continue
             try:
-                await provisioner(self._ha_bridge)
+                result = await provisioner(self._ha_bridge)
             except Exception as exc:
                 logger.warning(
                     "%s auto-provisioning failed: %s",
                     type(impl).__name__, exc,
                 )
+                continue
+            # Voice personas (satellite/speaker) return {service_name: bool}
+            # for the Wyoming add-ons they manage. Track successes so the
+            # local mock pipeline can be skipped when HA owns voice.
+            if isinstance(result, dict):
+                for svc, ok in result.items():
+                    if svc in ("wake_word", "stt", "tts") and ok:
+                        self._wyoming_voice_provisioned[svc] = True
 
     async def _forward_state_to_relay(self, entities: list[EntityStatePayload]) -> None:
         """Forward HA state changes to the Synork relay."""
@@ -1034,6 +1048,23 @@ class SynorkAddon:
                 "Phase 5: No microphone detected \u2014 assistant pipeline skipped "
                 "(check that /dev/snd is mapped through and contains a "
                 "pcmC*D*c capture node)"
+            )
+            return
+
+        # If HA's Wyoming add-ons (whisper + openWakeWord, optionally piper)
+        # were auto-provisioned successfully, voice flows through HA Assist
+        # via the wyoming integration's mDNS-advertised pipeline. Starting
+        # the local in-process pipeline on top would (a) duplicate audio
+        # capture against the same /dev/snd device and (b) currently fall
+        # back to mock mode anyway because the local STT/wake-word backends
+        # are TODO stubs. Skip it and log clearly where voice lives.
+        ww_ready = self._wyoming_voice_provisioned.get("wake_word", False)
+        stt_ready = self._wyoming_voice_provisioned.get("stt", False)
+        if ww_ready and stt_ready:
+            logger.info(
+                "Phase 5: Wyoming voice add-ons running (wake_word, stt"
+                "%s) \u2014 voice handled by HA Assist; local pipeline skipped",
+                ", tts" if self._wyoming_voice_provisioned.get("tts") else "",
             )
             return
 
