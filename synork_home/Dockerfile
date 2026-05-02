@@ -63,6 +63,15 @@ COPY requirements.txt /tmp/
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
+# Optional ML deps (onnxruntime / openwakeword / faster-whisper). These
+# frequently lack musllinux wheels for some arches; install best-effort
+# at build time so the image still produces. The bootloader retries at
+# runtime once the device is online.
+COPY requirements-optional.txt /tmp/
+RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements-optional.txt \
+    || echo "WARN: some optional ML deps unavailable, will retry at runtime"
+RUN rm -f /tmp/requirements-optional.txt
+
 # Clean up build dependencies to reduce image size
 RUN apk del gcc musl-dev python3-dev libffi-dev 2>/dev/null || true
 

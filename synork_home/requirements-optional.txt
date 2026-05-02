@@ -1,0 +1,13 @@
+# Heavy ML deps that frequently lack musllinux wheels for some arches.
+# Installed best-effort by the Dockerfile (failures non-fatal); the
+# bootloader retries at runtime so a slow/unavailable build cache
+# doesn't break the addon image.
+
+# ONNX Runtime (CPU) - used by openWakeWord
+onnxruntime>=1.17
+
+# Wake word detection (openWakeWord)
+openwakeword>=0.6,<1.0
+
+# STT - faster-whisper for local transcription (CTranslate2 INT8 by default).
+faster-whisper>=1.0,<2.0
