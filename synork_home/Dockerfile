@@ -59,7 +59,7 @@ RUN apk add --no-cache \
 # --------------------------------------------------------------------------- #
 # Python dependencies
 # --------------------------------------------------------------------------- #
-COPY addon/requirements.txt /tmp/
+COPY requirements.txt /tmp/
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
@@ -70,22 +70,22 @@ RUN apk del gcc musl-dev python3-dev libffi-dev 2>/dev/null || true
 # Application code
 # --------------------------------------------------------------------------- #
 # Copy shared protocol/schema types (contract source of truth)
-# Build context is synork-home/, so paths are relative to that.
+# Build context is synork_home/ (the addon root in this repo).
 COPY shared/ /app/shared/
 
-COPY addon/src/ /app/
+COPY src/ /app/
 
 # Bootloader: pulls latest app code from the public repo on every container
 # start (Synork live update system A). The /app tree above is kept as a
 # baked-in baseline used only when the network is unavailable.
-COPY addon/bootloader.py /opt/bootloader.py
+COPY bootloader.py /opt/bootloader.py
 RUN chmod a+x /opt/bootloader.py
 
 # Entrypoint script. The addon's config.yaml sets `init: false` which
 # disables Docker's default init wrapper so the parent image's `/init`
 # (s6-overlay v3) becomes PID 1, which is required for s6-overlay-suexec
 # and `with-contenv bashio` to function.
-COPY addon/run.sh /
+COPY run.sh /
 RUN chmod a+x /run.sh
 
 # Persistent data directory (HA maps /data for addon storage)
