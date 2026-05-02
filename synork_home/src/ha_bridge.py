@@ -34,6 +34,8 @@ from shared.protocol import (
     HaDevicePayload,
     HaRegistryMutationRequest,
     HaRegistryMutationResponse,
+    HomeKitPairingRequest,
+    HomeKitPairingResponse,
     ServiceCallRequest,
     ServiceCallResponse,
 )
@@ -526,6 +528,125 @@ class HABridge:
 
         await self.abort_config_flow(flow_id)
         return False
+
+    # -- HomeKit pairing (interactive, mirrors HA's flow) ------------------- #
+
+    @staticmethod
+    def _serialize_flow_schema(schema: Any) -> Optional[list[dict[str, Any]]]:
+        """Best-effort serialise a voluptuous schema (or a HA-supplied list) to JSON.
+
+        HA's WebSocket API already returns ``data_schema`` as a list of selector
+        dicts when the integration uses the new selector format (homekit_controller
+        does). We pass those through. For older voluptuous-only schemas we fall
+        back to a generic text-input list.
+        """
+        if schema is None:
+            return None
+        # HA usually serialises this for us already.
+        if isinstance(schema, list):
+            out: list[dict[str, Any]] = []
+            for field in schema:
+                if not isinstance(field, dict):
+                    continue
+                # Only keep the keys the frontend actually understands and that
+                # are JSON-safe. ``selector`` is the modern form; ``type`` /
+                # ``default`` / ``required`` cover the legacy shape.
+                safe = {
+                    k: v
+                    for k, v in field.items()
+                    if k in ("name", "type", "required", "optional", "default", "selector", "description")
+                }
+                out.append(safe)
+            return out
+        return None
+
+    @staticmethod
+    def _extract_discovered_devices(step: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
+        """Pull HomeKit's discovered-accessory list from a flow step.
+
+        homekit_controller's "user" step lists discovered devices under
+        ``description_placeholders`` or as ``data_schema`` enum options for
+        ``device``. We try both.
+        """
+        placeholders = step.get("description_placeholders") or {}
+        if isinstance(placeholders, dict):
+            devices = placeholders.get("devices") or placeholders.get("discovered_devices")
+            if isinstance(devices, list):
+                return devices
+
+        schema = step.get("data_schema")
+        if isinstance(schema, list):
+            for field in schema:
+                if not isinstance(field, dict):
+                    continue
+                if field.get("name") != "device":
+                    continue
+                selector = field.get("selector") or {}
+                if isinstance(selector, dict):
+                    select = selector.get("select") or {}
+                    options = select.get("options")
+                    if isinstance(options, list):
+                        out: list[dict[str, Any]] = []
+                        for opt in options:
+                            if isinstance(opt, dict):
+                                out.append({
+                                    "id": opt.get("value"),
+                                    "name": opt.get("label") or opt.get("value"),
+                                })
+                            else:
+                                out.append({"id": str(opt), "name": str(opt)})
+                        return out
+        return None
+
+    async def handle_homekit_pairing_request(
+        self, req: HomeKitPairingRequest,
+    ) -> HomeKitPairingResponse:
+        """Drive the HA ``homekit_controller`` config flow on behalf of the user."""
+        try:
+            if req.action == "start":
+                step = await self.start_config_flow("homekit_controller")
+            elif req.action == "step":
+                if not req.flow_id:
+                    raise ValueError("flow_id is required for action=step")
+                step = await self.submit_config_flow_step(req.flow_id, req.user_input)
+            elif req.action == "abort":
+                if req.flow_id:
+                    await self.abort_config_flow(req.flow_id)
+                return HomeKitPairingResponse(
+                    correlation_id=req.correlation_id,
+                    success=True,
+                    flow_type="abort",
+                )
+            else:
+                raise ValueError(f"unknown action: {req.action}")
+        except Exception as exc:
+            logger.warning("HomeKit pairing %s failed: %s", req.action, exc)
+            return HomeKitPairingResponse(
+                correlation_id=req.correlation_id,
+                success=False,
+                error_message=str(exc),
+            )
+
+        flow_type = step.get("type")
+        return HomeKitPairingResponse(
+            correlation_id=req.correlation_id,
+            success=True,
+            flow_id=step.get("flow_id"),
+            flow_type=flow_type,
+            step_id=step.get("step_id"),
+            data_schema=self._serialize_flow_schema(step.get("data_schema")),
+            description_placeholders=step.get("description_placeholders") or None,
+            errors=step.get("errors") or None,
+            discovered_devices=self._extract_discovered_devices(step),
+            created_entry=(
+                {
+                    "title": step.get("title"),
+                    "entry_id": (step.get("result") or {}).get("entry_id")
+                        if isinstance(step.get("result"), dict) else None,
+                }
+                if flow_type == "create_entry" else None
+            ),
+        )
 
     async def get_entity_state(self, entity_id: str) -> Optional[dict[str, Any]]:
         """Get the cached state of a specific entity."""

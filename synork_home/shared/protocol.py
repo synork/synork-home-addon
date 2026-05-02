@@ -487,6 +487,73 @@ class HaRegistryMutationResponse(BaseMessage):
 
 
 # ---------------------------------------------------------------------------
+# Apple HomeKit pairing — multi-step config_flow proxy
+# ---------------------------------------------------------------------------
+
+class HomeKitPairingRequest(BaseMessage):
+    """
+    Relay → addon: drive HA's ``homekit_controller`` config_flow.
+
+    A single message type covers the whole flow (start / step / abort) using
+    ``action`` + optional ``flow_id`` + ``user_input``. Mirrors HA's WS API.
+    """
+    message_type: Literal["homekit_pairing_request"] = "homekit_pairing_request"
+    correlation_id: str = Field(
+        default_factory=lambda: uuid.uuid4().hex,
+        description="Correlates this request with its HomeKitPairingResponse.",
+    )
+    action: Literal["start", "step", "abort"] = Field(
+        ...,
+        description="start: open a new flow. step: submit user input. abort: cancel a flow.",
+    )
+    flow_id: Optional[str] = Field(
+        None,
+        description="Existing flow_id (required for step / abort).",
+    )
+    user_input: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Form data for the current step (e.g. {'pairing_code': '123-45-678'}).",
+    )
+    requesting_user_id: str = Field(..., description="Synork user ID who initiated the action.")
+    household_id: str = Field(..., description="Household context for permission checks.")
+
+
+class HomeKitPairingResponse(BaseMessage):
+    """Addon → relay: result of a HomeKitPairingRequest step."""
+    message_type: Literal["homekit_pairing_response"] = "homekit_pairing_response"
+    correlation_id: str = Field(..., description="Matches the request.")
+    success: bool = Field(..., description="True if HA accepted the action.")
+    error_message: Optional[str] = Field(None, description="Error details if success is False.")
+    # HA flow shape — passed straight through to the UI
+    flow_id: Optional[str] = Field(None, description="Flow ID for subsequent steps.")
+    flow_type: Optional[str] = Field(
+        None,
+        description="HA flow result type: 'form', 'create_entry', 'abort', 'menu', 'progress', 'external_step'.",
+    )
+    step_id: Optional[str] = Field(None, description="Current step id (for 'form'/'menu').")
+    data_schema: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description="HA voluptuous schema serialised as a list of {name, type, required, ...}.",
+    )
+    description_placeholders: Optional[dict[str, Any]] = Field(
+        None,
+        description="HA's i18n placeholders for the current step.",
+    )
+    errors: Optional[dict[str, Any]] = Field(
+        None,
+        description="Per-field validation errors from the previous step.",
+    )
+    discovered_devices: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description="When step expects a device pick (e.g. 'pair'): list of {id, name, model, category}.",
+    )
+    created_entry: Optional[dict[str, Any]] = Field(
+        None,
+        description="On flow_type='create_entry': {entry_id, title, unique_id}.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Discriminated union — the single type to use for deserialization
 # ---------------------------------------------------------------------------
 
@@ -503,6 +570,8 @@ RelayMessage = Annotated[
         ServiceCallResponse,
         HaRegistryMutationRequest,
         HaRegistryMutationResponse,
+        HomeKitPairingRequest,
+        HomeKitPairingResponse,
         AssistantInvoke,
         AssistantResponse,
         AssistantStreamChunk,

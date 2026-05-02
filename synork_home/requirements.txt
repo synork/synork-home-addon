@@ -13,20 +13,25 @@ zeroconf>=0.131,<1.0
 
 # Audio I/O
 pyaudio>=0.2.14,<1.0
+soundfile>=0.12.1,<1.0
 
 # Voice Activity Detection
 webrtcvad>=2.0.10,<3.0
 
+# Numerical (required by openwakeword + faster-whisper)
+numpy>=1.26,<2.0
+
+# ONNX Runtime (CPU) — used by openWakeWord
+onnxruntime>=1.17,<2.0
+
 # Wake word detection (openWakeWord)
-# TODO: evaluate openwakeword package size on ARM — may need custom slim build
-# openwakeword>=0.6,<1.0
+openwakeword>=0.6,<1.0
 
-# STT — faster-whisper for local transcription
-# TODO: large dependency (~1.5GB model); conditional install based on platform
-# faster-whisper>=1.0,<2.0
+# STT — faster-whisper for local transcription (CTranslate2 INT8 by default).
+faster-whisper>=1.0,<2.0
 
-# TTS — Piper for local synthesis
-# TODO: piper-tts package; conditional install
+# TTS — Cartesia is HTTP only (covered by aiohttp). Piper local TTS is opt-in.
+# Uncomment to enable a local Piper fallback (~80MB model).
 # piper-tts>=1.2,<2.0
 
 # USB device detection

@@ -99,22 +99,114 @@ class WakeWordDetector:
         logger.info("Wake word detector stopped")
 
     async def _load_model(self) -> None:
-        """Load the openWakeWord model."""
-        # TODO: Load actual openWakeWord model when dependency is available
-        # import openwakeword
-        # self._model = openwakeword.Model(wakeword_models=[self.model_name])
-        raise ImportError("openwakeword not yet installed — using mock mode")
+        """Load the openWakeWord model.
+
+        Looks for ``/data/synork/models/<model_name>.onnx`` first, then falls
+        back to the bundled openwakeword community models. Either way we end
+        up with an ``openwakeword.Model`` instance ready for prediction.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _load_sync():
+            import openwakeword  # type: ignore
+            from openwakeword.model import Model  # type: ignore
+
+            custom = f"/data/synork/models/{self.model_name}.onnx"
+            import os
+            if os.path.exists(custom):
+                logger.info("Loading custom wake word model: %s", custom)
+                return Model(
+                    wakeword_models=[custom],
+                    inference_framework="onnx",
+                )
+            # Fallback to community model bundled with openwakeword.
+            # ``hey_jarvis`` has the closest cadence to ``hey arlo``.
+            try:
+                openwakeword.utils.download_models(["hey_jarvis_v0.1"])
+            except Exception:
+                pass
+            logger.info("Loading bundled wake word model: hey_jarvis_v0.1")
+            return Model(
+                wakeword_models=["hey_jarvis_v0.1"],
+                inference_framework="onnx",
+            )
+
+        self._model = await loop.run_in_executor(None, _load_sync)
 
     async def _listen_loop(self) -> None:
-        """Main audio capture and detection loop (production)."""
-        # TODO: Implement with pyaudio when dependencies are available
-        # This is the real pipeline:
-        # 1. Open audio stream (pyaudio)
-        # 2. Read chunks of CHUNK_SIZE samples
-        # 3. Feed to openWakeWord model
-        # 4. If confidence > threshold, fire callback
-        # 5. After detection, pause briefly to avoid re-triggers
-        pass
+        """Real audio capture + wake-word inference loop.
+
+        16 kHz mono, 80 ms windows. After a positive detection we apply a
+        2-second debounce so a single utterance can't double-trigger the
+        downstream pipeline.
+        """
+        import time
+        try:
+            import numpy as np
+            import pyaudio  # type: ignore
+        except ImportError as exc:
+            logger.error("Audio stack unavailable: %s — falling back to mock", exc)
+            self._mock_mode = True
+            await self._mock_listen_loop()
+            return
+
+        loop = asyncio.get_running_loop()
+        pa = pyaudio.PyAudio()
+        try:
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                input=True,
+                frames_per_buffer=CHUNK_SIZE,
+                input_device_index=self._audio_device_index,
+            )
+        except Exception as exc:
+            logger.error("Could not open mic: %s — falling back to mock", exc)
+            pa.terminate()
+            self._mock_mode = True
+            await self._mock_listen_loop()
+            return
+
+        DEBOUNCE_S = 2.0
+        last_fire = 0.0
+
+        def _read_chunk() -> bytes:
+            return stream.read(CHUNK_SIZE, exception_on_overflow=False)
+
+        def _predict(audio: bytes) -> float:
+            arr = np.frombuffer(audio, dtype=np.int16)
+            scores = self._model.predict(arr)  # type: ignore[union-attr]
+            # scores is a dict {model_label: confidence}; take the max.
+            if not scores:
+                return 0.0
+            return float(max(scores.values()))
+
+        try:
+            while self._running:
+                audio = await loop.run_in_executor(None, _read_chunk)
+                conf = await loop.run_in_executor(None, _predict, audio)
+                if conf:
+                    logger.debug("wake_word confidence=%.3f", conf)
+                if conf >= self.threshold:
+                    now = time.monotonic()
+                    if now - last_fire >= DEBOUNCE_S:
+                        last_fire = now
+                        logger.info("Wake word detected (%.3f)", conf)
+                        if self._callback:
+                            try:
+                                self._callback()
+                            except Exception as exc:
+                                logger.exception("Wake-word callback raised: %s", exc)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+            pa.terminate()
 
     async def _mock_listen_loop(self) -> None:
         """Simulate wake word detection for testing."""

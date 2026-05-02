@@ -1,15 +1,16 @@
 """Synork Home — TTS Routing.
 
 Routes text-to-speech requests to the best available provider:
-  - Piper: local, fast, low-latency, good for short responses
-  - ElevenLabs: cloud, higher quality, better for long/polished responses
+  - Cartesia Sonic-3: cloud, low-latency streaming — the preferred path for Arlo.
+  - Piper:            local, fast, low-latency, good fallback when offline.
+  - ElevenLabs:       cloud, high quality, used only when the relay TTS proxy is wired up.
 
-Selection logic:
-  - "auto" mode: Piper for <100 chars, ElevenLabs for longer (if online)
-  - "piper" mode: always local
-  - "elevenlabs" mode: always cloud (fallback to Piper if offline)
+Selection logic for ``provider="auto"``:
+  1. Cartesia (if API key + voice_id configured)
+  2. ElevenLabs (if relay reachable)         — currently a stub
+  3. Piper (always last-resort)              — currently a stub
 
-Audio format output: WAV (PCM 16-bit, 22050Hz or 24000Hz depending on model).
+Audio format output: WAV (PCM 16-bit, 22050Hz).
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ import asyncio
 import logging
 from typing import Optional
 
+from .cartesia_tts import CartesiaTTS
+
 logger = logging.getLogger("synork.assistant.tts")
 
-# Threshold for auto-switching between Piper and ElevenLabs
+# Threshold for auto-switching between Piper and ElevenLabs (legacy fallback).
 _SHORT_RESPONSE_CHARS = 100
 
 
@@ -39,6 +42,8 @@ class TTSRouter:
         language: str = "hu",
         relay_url: Optional[str] = None,
         mock_mode: bool = False,
+        cartesia_api_key: Optional[str] = None,
+        cartesia_voice_id: Optional[str] = None,
     ) -> None:
         self.provider = provider
         self.language = language
@@ -46,6 +51,17 @@ class TTSRouter:
         self._mock_mode = mock_mode
         self._piper_available = False
         self._elevenlabs_available = False
+
+        # Cartesia client — may be unconfigured; ``configured`` reports state.
+        self._cartesia = CartesiaTTS(
+            api_key=cartesia_api_key,
+            voice_id=cartesia_voice_id,
+        )
+
+    @property
+    def cartesia(self) -> CartesiaTTS:
+        """Direct access to the Cartesia client for callers that want streaming."""
+        return self._cartesia
 
     async def initialize(self) -> None:
         """Check availability of TTS providers."""
@@ -59,11 +75,19 @@ class TTSRouter:
         self._elevenlabs_available = self._relay_url is not None
 
         logger.info(
-            "TTS router initialized: piper=%s, elevenlabs=%s, mode=%s",
+            "TTS router initialized: cartesia=%s, piper=%s, elevenlabs=%s, mode=%s",
+            self._cartesia.configured,
             self._piper_available,
             self._elevenlabs_available,
             self.provider,
         )
+
+    async def aclose(self) -> None:
+        """Release any pooled HTTP sessions held by cloud providers."""
+        try:
+            await self._cartesia.close()
+        except Exception:
+            pass
 
     async def synthesize(
         self,
@@ -88,28 +112,45 @@ class TTSRouter:
 
         provider = self._select_provider(text)
 
+        if provider == "cartesia" and self._cartesia.configured:
+            return await self._synthesize_cartesia(text, lang, voice)
         if provider == "piper" and self._piper_available:
             return await self._synthesize_piper(text, lang, voice)
-        elif provider == "elevenlabs" and self._elevenlabs_available:
+        if provider == "elevenlabs" and self._elevenlabs_available:
             return await self._synthesize_elevenlabs(text, lang, voice)
-        elif self._piper_available:
-            # Fallback to Piper if requested provider unavailable
+        # Auto-fallbacks in priority order.
+        if self._cartesia.configured:
+            return await self._synthesize_cartesia(text, lang, voice)
+        if self._piper_available:
             return await self._synthesize_piper(text, lang, voice)
-        else:
-            logger.warning("No TTS provider available")
-            return self._mock_synthesize(text, lang)
+
+        logger.warning("No TTS provider available")
+        return self._mock_synthesize(text, lang)
 
     def _select_provider(self, text: str) -> str:
-        """Select the best provider based on config and text length."""
+        """Select the best provider based on config and availability."""
         if self.provider != "auto":
             return self.provider
 
-        # Auto mode: short = Piper (low latency), long = ElevenLabs (quality)
+        # Auto: Cartesia first when configured (best quality + streaming),
+        # then fall through to local/legacy providers.
+        if self._cartesia.configured:
+            return "cartesia"
         if len(text) <= _SHORT_RESPONSE_CHARS:
             return "piper"
         if self._elevenlabs_available:
             return "elevenlabs"
         return "piper"
+
+    async def _synthesize_cartesia(
+        self, text: str, language: str, voice: Optional[str]
+    ) -> bytes:
+        """Synthesize via Cartesia Sonic-3 (cloud)."""
+        try:
+            return await self._cartesia.synthesize(text, language=language, voice=voice)
+        except Exception as exc:
+            logger.error("Cartesia synth failed (%s) — falling back", exc)
+            return self._mock_synthesize(text, language)
 
     async def _synthesize_piper(self, text: str, language: str, voice: Optional[str]) -> bytes:
         """Synthesize using local Piper TTS."""

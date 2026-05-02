@@ -31,18 +31,23 @@ class STTEngine:
     def __init__(
         self,
         backend: str = "local",
-        model: str = "base",
+        model: str = "large-v3-turbo",
         language: str = "hu",
         relay_url: Optional[str] = None,
         mock_mode: bool = False,
     ) -> None:
         self.backend = backend
-        self.model_name = model
+        # Allow env override (set from addon options via run.sh).
+        import os
+        self.model_name = os.environ.get("WHISPER_MODEL", model)
         self.language = language
         self._relay_url = relay_url
         self._mock_mode = mock_mode
         self._whisper_model = None
         self._loaded = False
+        # Set to True after the first benchmark; if the chosen model is too
+        # slow on this hardware we transparently downgrade to ``small``.
+        self._benchmarked = False
 
     async def load(self) -> None:
         """Load the STT model (local) or verify connectivity (remote)."""
@@ -62,20 +67,39 @@ class STTEngine:
             logger.info("STT ready (remote via relay)")
 
     async def _load_local_model(self) -> None:
-        """Load the faster-whisper model."""
+        """Load the faster-whisper model (CTranslate2, INT8 quantized)."""
         try:
-            # TODO: Load actual faster-whisper when dependency is available
-            # from faster_whisper import WhisperModel
-            # self._whisper_model = WhisperModel(
-            #     self.model_name,
-            #     device="cpu",
-            #     compute_type="int8",
-            # )
-            raise ImportError("faster-whisper not yet installed")
+            from faster_whisper import WhisperModel  # type: ignore
         except ImportError:
             logger.warning("faster-whisper not available — falling back to mock STT")
             self._mock_mode = True
             self._loaded = True
+            return
+
+        loop = asyncio.get_running_loop()
+
+        def _load(model_name: str):
+            return WhisperModel(
+                model_name,
+                device="cpu",
+                compute_type="int8",
+                download_root="/data/synork/models/whisper",
+            )
+
+        try:
+            self._whisper_model = await loop.run_in_executor(None, _load, self.model_name)
+            self._loaded = True
+            logger.info("Whisper model loaded: %s", self.model_name)
+        except Exception as exc:
+            logger.error("Failed to load whisper '%s': %s — trying 'small'", self.model_name, exc)
+            try:
+                self._whisper_model = await loop.run_in_executor(None, _load, "small")
+                self.model_name = "small"
+                self._loaded = True
+            except Exception as exc2:
+                logger.error("Whisper fallback failed: %s — mock mode", exc2)
+                self._mock_mode = True
+                self._loaded = True
 
     async def transcribe(self, audio_data: bytes) -> str:
         """Transcribe a complete audio buffer to text.
@@ -112,22 +136,47 @@ class STTEngine:
         return await self.transcribe(b"".join(chunks))
 
     async def _transcribe_local(self, audio_data: bytes) -> str:
-        """Transcribe using the local faster-whisper model."""
-        # Run in executor to avoid blocking the event loop
+        """Transcribe using the local faster-whisper model.
+
+        First call doubles as a benchmark: if it takes longer than 3 seconds
+        for a 1–3 second clip, we log a warning and reload as ``small`` so
+        future calls are responsive on weak hardware.
+        """
         loop = asyncio.get_running_loop()
+        import time
 
         def _run():
-            import io
             import numpy as np
             audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
             segments, _ = self._whisper_model.transcribe(
                 audio_array,
                 language=self.language,
                 beam_size=5,
+                vad_filter=True,
             )
             return " ".join(seg.text.strip() for seg in segments)
 
-        return await loop.run_in_executor(None, _run)
+        t0 = time.monotonic()
+        text = await loop.run_in_executor(None, _run)
+        elapsed = time.monotonic() - t0
+
+        if not self._benchmarked:
+            self._benchmarked = True
+            duration_s = len(audio_data) / (16000 * 2)
+            # Real-time factor: > ~1.5x is workable, > 3s for short clip = degrade.
+            if duration_s > 0 and elapsed > 3.0 and self.model_name not in ("tiny", "base", "small"):
+                logger.warning(
+                    "Whisper '%s' too slow on this hardware (%.2fs for %.2fs audio) — "
+                    "downgrading to 'small'",
+                    self.model_name, elapsed, duration_s,
+                )
+                # Reload in background; current result still returned to caller.
+                async def _reload():
+                    self.model_name = "small"
+                    await self._load_local_model()
+                asyncio.create_task(_reload())
+
+        return text
 
     async def _transcribe_remote(self, audio_data: bytes) -> str:
         """Forward audio to the Synork relay for cloud STT."""

@@ -92,6 +92,7 @@ from shared.protocol import (
     EntityStateUpdate,
     ServiceCallRequest,
     HaRegistryMutationRequest,
+    HomeKitPairingRequest,
     VoiceQueryFromAssistant,
     VoiceResponseToAssistant,
 )
@@ -129,6 +130,8 @@ class AddonConfig:
         self.cloud_stt: bool = args.cloud_stt.lower() == "true"
         self.wake_word: str = args.wake_word
         self.tts_provider: str = args.tts_provider
+        self.cartesia_api_key: str = getattr(args, "cartesia_api_key", "") or ""
+        self.cartesia_voice_id: str = getattr(args, "cartesia_voice_id", "") or ""
         self.assistant_pipeline: bool = args.assistant_pipeline.lower() == "true"
         self.frontend_patcher: bool = args.frontend_patcher.lower() == "true"
         self.satellite_port: int = int(args.satellite_port)
@@ -947,6 +950,10 @@ class SynorkAddon:
         self._relay_client.on("entity_state_query", self._handle_entity_query)
         self._relay_client.on("assistant_invoke", self._handle_assistant_invoke)
         self._relay_client.on("ha_registry_mutation_request", self._handle_registry_mutation)
+        self._relay_client.on("homekit_pairing_request", self._handle_homekit_pairing)
+        # Arlo "thinking" filler: backend pushes an AssistantStreamChunk while
+        # the deep model is generating, so we can speak immediately.
+        self._relay_client.on("assistant_stream_chunk", self._handle_assistant_stream_chunk)
 
         # Push the HA device/entity registry snapshot every time the relay
         # (re)connects, so the backend's notion of "devices" is always fresh.
@@ -991,6 +998,17 @@ class SynorkAddon:
         if self._relay_client and self._relay_client.connected:
             await self._relay_client.send(response)
 
+    async def _handle_homekit_pairing(self, msg: Any) -> None:
+        """Drive a step of the HA homekit_controller config flow."""
+        if not isinstance(msg, HomeKitPairingRequest):
+            return
+        if not self._ha_bridge:
+            return
+
+        response = await self._ha_bridge.handle_homekit_pairing_request(msg)
+        if self._relay_client and self._relay_client.connected:
+            await self._relay_client.send(response)
+
     async def _handle_entity_query(self, msg: Any) -> None:
         """Handle an EntityStateQuery from the relay."""
         if not isinstance(msg, EntityStateQuery):
@@ -1010,6 +1028,33 @@ class SynorkAddon:
         # For now, forward back to relay as a text query
         # The cloud assistant brain handles the actual response generation
         logger.info("Received assistant invoke from relay: %s", msg.query[:100])
+
+    async def _handle_assistant_stream_chunk(self, msg: Any) -> None:
+        """Speak an in-flight stream chunk from the cloud brain.
+
+        Used by Arlo's COMPLEX path: the backend pushes a short "thinking"
+        filler so the user hears something while the deep model runs.
+        Best-effort — silently drops if the pipeline isn't ready.
+        """
+        try:
+            # Late-import to avoid loading protocol module when assistant disabled.
+            from shared.protocol import AssistantStreamChunk  # type: ignore
+        except Exception:
+            return
+        if not isinstance(msg, AssistantStreamChunk):
+            return
+        if not self._pipeline:
+            return
+        text = (msg.text_delta or "").strip()
+        if not text:
+            return
+        try:
+            audio = await self._pipeline._tts.synthesize(  # type: ignore[attr-defined]
+                text, language=msg.language or self.config.language,
+            )
+            await self._pipeline._play_audio(audio)  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.debug("Filler chunk playback failed (non-fatal): %s", exc)
 
     # ── Phase 5: Assistant Pipeline ─────────────────────────────────────
 
@@ -1101,6 +1146,8 @@ class SynorkAddon:
                 language=self.config.language,
                 relay_url=self.config.relay_api_url,
                 mock_mode=mock,
+                cartesia_api_key=self.config.cartesia_api_key,
+                cartesia_voice_id=self.config.cartesia_voice_id,
             )
             await tts.initialize()
 
@@ -1237,7 +1284,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-stt", default="true", help="Enable local STT")
     parser.add_argument("--cloud-stt", default="false", help="Enable cloud STT")
     parser.add_argument("--wake-word", default="hey_synork", help="Wake word model name")
-    parser.add_argument("--tts-provider", default="auto", help="TTS provider (auto/piper/elevenlabs)")
+    parser.add_argument("--tts-provider", default="auto", help="TTS provider (auto/cartesia/piper/elevenlabs)")
+    parser.add_argument("--cartesia-api-key", default="", help="Cartesia Sonic-3 API key (cloud TTS)")
+    parser.add_argument("--cartesia-voice-id", default="", help="Cartesia voice id used for Arlo's voice")
     parser.add_argument("--assistant-pipeline", default="true", help="Enable assistant pipeline")
     parser.add_argument("--frontend-patcher", default="true", help="Enable frontend patcher")
     parser.add_argument("--satellite-port", default="8765", help="Port for satellite WebSocket connections (Hub mode)")
