@@ -1180,9 +1180,18 @@ class SynorkAddon:
                         None, lambda: discover_input_device(prefer)
                     )
                     mic_index = discovered.index
+                    # Pulse-routed pick: export the source name so PyAudio's
+                    # default device routes there. Index stays None.
+                    if discovered.pulse_source:
+                        os.environ["PULSE_SOURCE"] = discovered.pulse_source
+                        logger.info(
+                            "Phase 5: PULSE_SOURCE=%s (backend=pulse)",
+                            discovered.pulse_source,
+                        )
                     logger.info(
-                        "Phase 5: mic auto-discovery — device='%s' idx=%s (%s)%s",
-                        discovered.name, discovered.index, discovered.reason,
+                        "Phase 5: mic auto-discovery — device='%s' idx=%s backend=%s (%s)%s",
+                        discovered.name, discovered.index, discovered.backend,
+                        discovered.reason,
                         f" [keyword='{override}']" if prefer else "",
                     )
                 except Exception as exc:

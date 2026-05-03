@@ -1,34 +1,34 @@
 """
 Synork Home — Automatic microphone discovery.
 
-The addon must work zero-config: no user settings for which mic to use, no
-``audio_device_index`` knob in the HA add-on options. This module picks the
-right capture device automatically and verifies it can actually be opened
-at the wake-word pipeline's required format (16 kHz mono, 16-bit PCM).
+Two-stage strategy:
 
-Discovery strategy:
+  Stage 1 — PulseAudio (preferred when available).
+    The HA Supervisor mounts a Pulse socket at /run/audio when the addon
+    declares ``audio: true`` in config.yaml. Pulse sees every source the
+    *host* sees — including USB mics and Bluetooth devices that hot-plug
+    after container start, which raw ALSA enumeration misses entirely.
 
-  1. Enumerate every PyAudio input device.
-  2. Skip anything that obviously isn't a real mic
-     (HDMI loopback, ``null``, ``dummy``, pulse-monitor, etc.).
-  3. Score remaining candidates by name keywords — USB / array / mic / 
-     respeaker / seeed / etc. all rank higher than generic onboard codecs.
-  4. Try to open each candidate at 16 kHz mono 16-bit. The first one that
-     actually opens wins. This catches cases where PortAudio reports a
-     device as supported but ALSA refuses to open it (busy, wrong perms,
-     no capture pin routed, etc.).
-  5. If nothing opens, fall back to ``None`` so PyAudio uses its own
-     default — same behaviour the codebase had before.
+    We enumerate Pulse sources via ``pulsectl`` (pure-Python, no compile)
+    and pick the best by name keyword. The chosen source name is exported
+    as ``PULSE_SOURCE`` for the consumer; PortAudio's Pulse backend then
+    routes the default device to that source automatically.
 
-The result is exposed as a small ``DiscoveredMic`` dataclass so callers
-can log what was picked, while only ever needing the integer device index
-for the actual stream open.
+  Stage 2 — PortAudio fallback.
+    If Pulse is unavailable (no socket, no ``pulsectl``, host without
+    PulseAudio), enumerate input devices via PyAudio and probe-open the
+    best candidate at 16 kHz mono. Matches the old behaviour.
+
+Caller passes ``DiscoveredMic.index`` to ``pyaudio.open(input_device_index=…)``.
+``index=None`` means "use PortAudio's default" — which is the right answer
+for Pulse-routed sources (the env var does the routing).
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 logger = logging.getLogger("synork.assistant.audio_io")
@@ -48,6 +48,8 @@ _KEYWORDS = (
     ("respeaker", 60),     # ReSpeaker 2-mic / 4-mic / mic-array
     ("seeed", 50),         # Seeed Voicecard
     ("array", 40),         # Generic mic arrays
+    ("airpods", 35),       # Apple BT earbuds
+    ("bluetooth", 30),
     ("mic", 25),
     ("usb", 20),
     ("input", 10),
@@ -63,15 +65,26 @@ _SOFT_DEFAULTS = ("default", "pulse", "pipewire", "sysdefault")
 @dataclass(frozen=True)
 class DiscoveredMic:
     """Result of an automatic microphone scan."""
-    index: Optional[int]                     # ``None`` = let PortAudio choose
+    index: Optional[int]                     # PortAudio device index (``None`` = default)
     name: str                                # human-readable description
     channels: int                            # device's max input channels
     sample_rate: int                         # default sample rate it reports
     reason: str                              # short note for logs
+    pulse_source: Optional[str] = None       # Pulse source name to export as PULSE_SOURCE
+    backend: str = "portaudio"               # "pulse" or "portaudio"
 
 
-def _score(name: str, channels: int) -> int:
-    """Score a candidate device by its reported name and channel count."""
+@dataclass(frozen=True)
+class AudioSource:
+    """A capture source as listed for the web UI dropdown."""
+    name: str          # canonical name (Pulse source name or PortAudio idx string)
+    description: str   # human-readable
+    backend: str       # "pulse" or "portaudio"
+    channels: int = 0
+
+
+def _score(name: str, channels: int, extras: tuple[tuple[str, int], ...] = ()) -> int:
+    """Score a candidate by reported name + channels + caller keywords."""
     n = (name or "").lower()
     if not n:
         return -1000
@@ -83,6 +96,10 @@ def _score(name: str, channels: int) -> int:
             break
 
     keyword_hit = False
+    for kw, weight in extras:
+        if kw and kw in n:
+            score += weight
+            keyword_hit = True
     for kw, weight in _KEYWORDS:
         if kw in n:
             score += weight
@@ -91,15 +108,86 @@ def _score(name: str, channels: int) -> int:
 
     for soft in _SOFT_DEFAULTS:
         if soft in n:
-            score += 5  # mild preference; concrete mic still wins
+            score += 5
 
-    # Mic arrays ride channel count — but only if they also matched a
-    # positive keyword. A 32-channel HDMI loopback shouldn't win on count.
     if keyword_hit:
         score += min(channels, 8)
 
     return score
 
+
+# --------------------------------------------------------------------------- #
+# Stage 1 — PulseAudio
+# --------------------------------------------------------------------------- #
+
+def _pulse_socket_available() -> bool:
+    """Return True if a Pulse server is reachable from this container."""
+    server = os.environ.get("PULSE_SERVER", "").strip()
+    if server:
+        # ``unix:/run/audio/external`` — strip the prefix and check the path.
+        path = server.split(":", 1)[-1] if server.startswith("unix:") else None
+        if path and os.path.exists(path):
+            return True
+        # Anything else (tcp:host:port) — we can't easily probe; trust env.
+        return True
+    # Common HA Supervisor mount point.
+    return os.path.exists("/run/audio/external") or os.path.exists("/run/audio")
+
+
+def _list_pulse_sources() -> list[AudioSource]:
+    """List capture sources via pulsectl. Empty list if Pulse unreachable."""
+    try:
+        import pulsectl  # type: ignore
+    except ImportError:
+        logger.debug("Pulse discovery: pulsectl not installed")
+        return []
+
+    if not _pulse_socket_available():
+        logger.debug("Pulse discovery: no Pulse socket reachable")
+        return []
+
+    try:
+        with pulsectl.Pulse("synork-mic-discovery") as pulse:
+            sources = []
+            for src in pulse.source_list():
+                # Skip monitors (loopback of speaker output) — they aren't
+                # mics in any useful sense.
+                if getattr(src, "monitor_of_sink", None) not in (None, 0xffffffff):
+                    continue
+                name = src.name or ""
+                desc = src.description or name
+                ch = int(getattr(src, "channel_count", 0) or 0)
+                sources.append(AudioSource(
+                    name=name, description=desc, backend="pulse", channels=ch,
+                ))
+            return sources
+    except Exception as exc:
+        logger.warning("Pulse discovery failed: %s", exc)
+        return []
+
+
+def _pick_pulse_source(
+    sources: list[AudioSource],
+    extras: tuple[tuple[str, int], ...],
+) -> Optional[AudioSource]:
+    """Return the best-scoring Pulse source, or ``None`` if nothing scores >0."""
+    best: Optional[tuple[int, AudioSource]] = None
+    for s in sources:
+        # Score against both the technical name and the description.
+        sc = max(
+            _score(s.name, s.channels, extras),
+            _score(s.description, s.channels, extras),
+        )
+        if best is None or sc > best[0]:
+            best = (sc, s)
+    if best is None or best[0] <= -200:
+        return None
+    return best[1]
+
+
+# --------------------------------------------------------------------------- #
+# Stage 2 — PortAudio fallback
+# --------------------------------------------------------------------------- #
 
 def _try_open(pa, index: int) -> bool:
     """Probe by actually opening the stream — the only reliable test."""
@@ -114,8 +202,6 @@ def _try_open(pa, index: int) -> bool:
         ):
             return False
     except (ValueError, Exception):
-        # PortAudio raises ValueError when the format is rejected; we treat
-        # any check failure the same — fall through to a real open below.
         pass
 
     try:
@@ -138,23 +224,94 @@ def _try_open(pa, index: int) -> bool:
     return True
 
 
+def _list_portaudio_devices() -> list[AudioSource]:
+    """List input-capable PortAudio devices (used for the web UI dropdown)."""
+    try:
+        import pyaudio  # type: ignore
+    except ImportError:
+        return []
+    out: list[AudioSource] = []
+    pa = pyaudio.PyAudio()
+    try:
+        for i in range(pa.get_device_count()):
+            try:
+                info = pa.get_device_info_by_index(i)
+            except Exception:
+                continue
+            if int(info.get("maxInputChannels", 0) or 0) < 1:
+                continue
+            name = str(info.get("name") or f"device #{i}")
+            ch = int(info.get("maxInputChannels", 0) or 0)
+            out.append(AudioSource(
+                name=str(i), description=name, backend="portaudio", channels=ch,
+            ))
+    finally:
+        try:
+            pa.terminate()
+        except Exception:
+            pass
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Public API
+# --------------------------------------------------------------------------- #
+
+def list_audio_sources() -> list[AudioSource]:
+    """Enumerate every capture source the addon can offer to the user.
+
+    Pulse sources first (the rich list — sees hot-plugged USB / BT mics),
+    then PortAudio devices as a fallback. Used by the web UI dropdown so
+    the user can pick by real name instead of guessing an index.
+    """
+    sources = _list_pulse_sources()
+    sources.extend(_list_portaudio_devices())
+    return sources
+
+
 def discover_input_device(
     prefer_keywords: Optional[Iterable[str]] = None,
 ) -> DiscoveredMic:
-    """Pick the best capture device available, or fall back to PortAudio's default.
+    """Pick the best capture device available.
 
-    Caller passes the resulting ``.index`` to ``pyaudio.PyAudio.open(...)``
-    via ``input_device_index``. ``None`` means "let PortAudio choose".
+    Tries Pulse first (the right answer in any HA-addon container with
+    ``audio: true``); falls back to PortAudio enumeration if Pulse isn't
+    reachable. ``prefer_keywords`` lets the caller boost specific names
+    (e.g. ``("airpods",)`` to lock onto a paired Bluetooth source).
     """
+    extras = tuple((kw.lower(), 50) for kw in (prefer_keywords or ()))
+
+    # ── Stage 1: Pulse ──────────────────────────────────────────────────
+    pulse_sources = _list_pulse_sources()
+    if pulse_sources:
+        picked = _pick_pulse_source(pulse_sources, extras)
+        if picked is not None:
+            logger.info(
+                "Mic discovery: picked Pulse source '%s' (%s, ch=%d)",
+                picked.description, picked.name, picked.channels,
+            )
+            return DiscoveredMic(
+                index=None,
+                name=picked.description,
+                channels=picked.channels,
+                sample_rate=_REQUIRED_RATE,
+                reason="pulse-best",
+                pulse_source=picked.name,
+                backend="pulse",
+            )
+        logger.warning(
+            "Pulse discovery: %d sources visible but none matched a "
+            "useful keyword — falling through to PortAudio probe",
+            len(pulse_sources),
+        )
+
+    # ── Stage 2: PortAudio fallback ─────────────────────────────────────
     try:
         import pyaudio  # type: ignore
     except ImportError as exc:
         logger.warning("PyAudio missing — mic discovery skipped (%s)", exc)
         return DiscoveredMic(None, "(pyaudio unavailable)", 0, 0,
                               reason="pyaudio import failed")
-
-    extras = tuple((kw.lower(), 30) for kw in (prefer_keywords or ()))
-    keywords = extras + _KEYWORDS
 
     pa = pyaudio.PyAudio()
     try:
@@ -175,42 +332,34 @@ def discover_input_device(
                 continue
             name = str(info.get("name") or "")
             ch = int(info.get("maxInputChannels", 0) or 0)
-            score = _score(name, ch)
-            # Apply caller-provided keyword overrides on top.
-            n = name.lower()
-            for kw, weight in extras:
-                if kw and kw in n:
-                    score += weight
-            candidates.append((score, i, info))
+            candidates.append((_score(name, ch, extras), i, info))
 
         if not candidates:
             logger.warning(
-                "Mic discovery: no input-capable devices reported by PortAudio "
-                "(check that /dev/snd is mapped through and the addon has "
-                "audio group access)"
+                "Mic discovery: no input-capable devices reported by either "
+                "PulseAudio or PortAudio — check /dev/snd is mapped through "
+                "and the addon has audio group access"
             )
             return DiscoveredMic(None, "(no devices)", 0, 0,
                                   reason="no input-capable devices")
 
         candidates.sort(key=lambda t: t[0], reverse=True)
 
-        # Walk in score order, keep the first one that actually opens.
         for score, idx, info in candidates:
             name = str(info.get("name") or f"device #{idx}")
             ch = int(info.get("maxInputChannels", 0) or 0)
             rate = int(info.get("defaultSampleRate", 0) or 0)
             if score <= -200:
-                # Blacklisted; keep iterating in case nothing else opens.
                 continue
             if _try_open(pa, idx):
                 logger.info(
-                    "Mic discovery: picked '%s' (idx=%d, ch=%d, rate=%dHz, score=%d)",
+                    "Mic discovery: picked PortAudio '%s' (idx=%d, ch=%d, rate=%dHz, score=%d)",
                     name, idx, ch, rate, score,
                 )
                 return DiscoveredMic(idx, name, ch, rate,
-                                      reason=f"score={score} (opened ok)")
+                                      reason=f"score={score} (opened ok)",
+                                      backend="portaudio")
 
-        # Nothing concrete opened; let PortAudio fall back to its default.
         top_score, top_idx, top_info = candidates[0]
         top_name = str(top_info.get("name") or f"device #{top_idx}")
         logger.warning(
@@ -227,4 +376,9 @@ def discover_input_device(
             pass
 
 
-__all__ = ["DiscoveredMic", "discover_input_device"]
+__all__ = [
+    "DiscoveredMic",
+    "AudioSource",
+    "discover_input_device",
+    "list_audio_sources",
+]

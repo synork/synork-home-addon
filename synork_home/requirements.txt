@@ -1,6 +1,5 @@
-# Synork Home Add-on - core Python dependencies (always installed at build).
-# Heavy / arch-fragile ML deps live in requirements-optional.txt and are
-# installed best-effort by the bootloader at runtime.
+# Synork Home Add-on Python Dependencies
+# NOTE: versions pinned for reproducibility; review before release
 
 # WebSocket + HTTP
 websockets>=13.0,<14.0
@@ -15,6 +14,9 @@ zeroconf>=0.131,<1.0
 # Audio I/O
 pyaudio>=0.2.14,<1.0
 soundfile>=0.12.1,<1.0
+# PulseAudio control — pure Python; lets us enumerate Pulse sources so we
+# see hot-plugged USB / Bluetooth mics that raw ALSA discovery misses.
+pulsectl>=23.5.2,<25.0
 
 # Voice Activity Detection
 webrtcvad>=2.0.10,<3.0
@@ -22,5 +24,22 @@ webrtcvad>=2.0.10,<3.0
 # Numerical (required by openwakeword + faster-whisper)
 numpy>=1.26,<2.0
 
+# ONNX Runtime (CPU) — used by openWakeWord
+onnxruntime>=1.17,<2.0
+
+# Wake word detection (openWakeWord)
+openwakeword>=0.6,<1.0
+
+# STT — faster-whisper for local transcription (CTranslate2 INT8 by default).
+faster-whisper>=1.0,<2.0
+
+# TTS — Cartesia is HTTP only (covered by aiohttp). Piper local TTS is opt-in.
+# Uncomment to enable a local Piper fallback (~80MB model).
+# piper-tts>=1.2,<2.0
+
 # USB device detection
 pyudev>=0.24,<1.0
+
+# Bluetooth (for hardware detection; BLE provisioning is v1.5)
+# TODO: evaluate dbus-fast vs bleak for HA addon context
+# bleak>=0.21,<1.0
