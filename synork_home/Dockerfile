@@ -14,6 +14,10 @@ RUN apk add --no-cache \
     alsa-utils \
     alsa-lib \
     portaudio-dev \
+    # PulseAudio client lib — needed by pulsectl (ctypes loads libpulse.so.0)
+    # so Pulse-routed mics (AirPods/USB headsets via the host PA socket
+    # mounted by HA's audio bridge) are visible to discovery.
+    pulseaudio \
     # Bluetooth (for BLE provisioning v1.5 + device detection)
     bluez \
     bluez-libs \

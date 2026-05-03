@@ -11,3 +11,9 @@ openwakeword>=0.6,<1.0
 
 # STT - faster-whisper for local transcription (CTranslate2 INT8 by default).
 faster-whisper>=1.0,<2.0
+
+# PulseAudio control — pure-Python ctypes binding to libpulse. Optional so a
+# transient pip failure can never break the addon image build; audio_io.py
+# falls back to PortAudio enumeration when pulsectl is missing or libpulse
+# can't be loaded at runtime.
+pulsectl>=23.5.2,<25.0

@@ -30,7 +30,7 @@ SATELLITE_PORT=$(bashio::config 'satellite_port')
 AUDIO_DEVICE=$(bashio::config 'audio_device')
 MODE=$(bashio::config 'mode')
 
-bashio::log.info "Synork Home v0.2.10 — live entrypoint"
+bashio::log.info "Synork Home v0.2.11 — live entrypoint"
 bashio::log.info "Mode: ${MODE} | Language: ${LANGUAGE} | Log level: ${LOG_LEVEL}"
 if [ -n "${DEVICE_ID}" ]; then
     bashio::log.info "Device ID: ${DEVICE_ID}"

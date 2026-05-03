@@ -14,9 +14,9 @@ zeroconf>=0.131,<1.0
 # Audio I/O
 pyaudio>=0.2.14,<1.0
 soundfile>=0.12.1,<1.0
-# PulseAudio control — pure Python; lets us enumerate Pulse sources so we
-# see hot-plugged USB / Bluetooth mics that raw ALSA discovery misses.
-pulsectl>=23.5.2,<25.0
+# pulsectl is optional and lives in requirements-optional.txt so a pip
+# hiccup can never break the addon image build. The audio_io module
+# already handles ImportError and falls back to PortAudio enumeration.
 
 # Voice Activity Detection
 webrtcvad>=2.0.10,<3.0
