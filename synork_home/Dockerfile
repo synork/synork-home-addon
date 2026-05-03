@@ -14,10 +14,6 @@ RUN apk add --no-cache \
     alsa-utils \
     alsa-lib \
     portaudio-dev \
-    # PulseAudio client lib — needed by pulsectl (ctypes loads libpulse.so.0)
-    # so Pulse-routed mics (AirPods/USB headsets via the host PA socket
-    # mounted by HA's audio bridge) are visible to discovery.
-    pulseaudio \
     # Bluetooth (for BLE provisioning v1.5 + device detection)
     bluez \
     bluez-libs \
@@ -59,6 +55,14 @@ RUN apk add --no-cache \
         --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
         tayga \
     || echo "WARN: tayga unavailable, NAT64 disabled"
+
+# Best-effort install of libpulse (Pulse client library) so pulsectl's
+# ctypes loader can find libpulse.so.0 and enumerate PulseAudio sources
+# from the host PA socket mounted by HA's audio bridge. Non-fatal —
+# audio_io.py falls back to PortAudio enumeration when this is missing.
+RUN apk add --no-cache pulseaudio-libs \
+    || apk add --no-cache pulseaudio \
+    || echo "WARN: libpulse unavailable, Pulse-aware mic discovery disabled"
 
 # --------------------------------------------------------------------------- #
 # Python dependencies
