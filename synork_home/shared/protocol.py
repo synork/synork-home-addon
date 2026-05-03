@@ -153,19 +153,15 @@ class RelayWelcome(BaseMessage):
     )
     session_token: str = Field(
         ...,
-        description="Short-lived session token for subsequent API calls.",
-    )
-    session_expires_at: datetime = Field(..., description="When the session token expires.")
-    cloud_credentials: dict[str, str] = Field(
-        default_factory=dict,
         description=(
-            "Relay-supplied secrets the addon must NOT ask the user for. "
-            "Keys: cartesia_api_key, cartesia_voice_id, openrouter_api_key, "
-            "arlo_internal_secret. Values are exported as the matching "
-            "uppercase env vars by the addon so cloud TTS / brain just work. "
-            "Empty values are skipped (existing env is preserved)."
+            "Short-lived session token. The addon uses it as a Bearer token "
+            "on subsequent HTTP calls to the Synork relay (e.g. POST "
+            "/api/home/tts/synthesize, /api/home/ai/invoke). The relay "
+            "holds the upstream provider keys server-side \u2014 they are "
+            "never sent to the device."
         ),
     )
+    session_expires_at: datetime = Field(..., description="When the session token expires.")
 
 
 # ---------------------------------------------------------------------------

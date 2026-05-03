@@ -303,13 +303,20 @@ class WiFiAPFallback:
         return None
 
     async def _run_cmd(self, *args: str) -> str:
-        """Run a command via subprocess and return stdout."""
+        """Run a command via subprocess and return stdout.
+
+        We deliberately do NOT log argv or stderr here — callers may pass Wi-Fi
+        passwords or other secrets in `args`, and some tools (e.g. nmcli) echo
+        argv back in their error output. We log only the program name and exit
+        status to avoid leaking credentials into log files.
+        """
+        program = args[0] if args else "<unknown>"
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        stdout, _stderr = await proc.communicate()
         if proc.returncode != 0:
-            logger.warning("Command %s failed: %s", args[0], stderr.decode().strip())
+            logger.warning("Command %s exited with code %s", program, proc.returncode)
         return stdout.decode().strip()

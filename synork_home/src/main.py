@@ -130,9 +130,10 @@ class AddonConfig:
         self.cloud_stt: bool = args.cloud_stt.lower() == "true"
         self.wake_word: str = args.wake_word
         self.tts_provider: str = args.tts_provider
-        # cartesia_api_key intentionally NOT in config — supplied by the relay
-        # over WS (see RelayWelcome.cloud_credentials) and read from env at
-        # the cartesia client. Only voice_id is user-selectable.
+        # cartesia_api_key intentionally NOT in config — cloud TTS goes through
+        # the Synork relay (Bearer-authenticated by the device session_token);
+        # the relay holds the upstream provider key. Only voice_id is
+        # user-selectable.
         self.cartesia_voice_id: str = getattr(args, "cartesia_voice_id", "") or ""
         self.assistant_pipeline: bool = args.assistant_pipeline.lower() == "true"
         self.frontend_patcher: bool = args.frontend_patcher.lower() == "true"
@@ -964,16 +965,16 @@ class SynorkAddon:
         # Start relay connection in background (auto-reconnects)
         self._relay_task = asyncio.create_task(self._relay_client.connect())
 
-        # Block briefly so cloud_credentials from RelayWelcome land in env
-        # before Phase 5 constructs cloud TTS / brain clients. Non-fatal:
-        # if the relay is unreachable, voice degrades to local providers and
-        # picks up creds on the next reconnect.
+        # Block briefly so the relay session_token is available before Phase 5
+        # constructs cloud TTS clients (which Bearer-auth against the relay).
+        # Non-fatal: if the relay is unreachable, voice degrades to local
+        # providers and picks up the token on the next reconnect.
         if await self._relay_client.wait_for_auth(timeout=10.0):
-            logger.info("Phase 4: relay authenticated — cloud credentials in env")
+            logger.info("Phase 4: relay authenticated — session token ready for cloud calls")
         else:
             logger.warning(
                 "Phase 4: relay auth not complete after 10s — "
-                "voice will start with local fallbacks until creds arrive"
+                "voice will start with local fallbacks until the session token arrives"
             )
 
     async def _push_initial_registry_snapshot(self) -> None:
@@ -1160,8 +1161,13 @@ class SynorkAddon:
                 language=self.config.language,
                 relay_url=self.config.relay_api_url,
                 mock_mode=mock,
-                # api key comes from env (relay-pushed via RelayWelcome)
-                cartesia_api_key=None,
+                # Synthesis is proxied through the Synork relay; the device
+                # authenticates with its short-lived WS session_token so no
+                # upstream provider API key ever touches the addon.
+                session_token_getter=(
+                    lambda: self._relay_client.session_token
+                    if self._relay_client else None
+                ),
                 cartesia_voice_id=self.config.cartesia_voice_id,
             )
             await tts.initialize()

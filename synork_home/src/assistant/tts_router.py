@@ -1,39 +1,37 @@
 """Synork Home — TTS Routing.
 
 Routes text-to-speech requests to the best available provider:
-  - Cartesia Sonic-3: cloud, low-latency streaming — the preferred path for Arlo.
-  - Piper:            local, fast, low-latency, good fallback when offline.
-  - ElevenLabs:       cloud, high quality, used only when the relay TTS proxy is wired up.
+  - Relay TTS: cloud, calls Synork's relay (which proxies to Cartesia / etc.) — the preferred path for Arlo.
+  - Piper:     local, fast, low-latency, good fallback when offline.
 
 Selection logic for ``provider="auto"``:
-  1. Cartesia (if API key + voice_id configured)
-  2. ElevenLabs (if relay reachable)         — currently a stub
-  3. Piper (always last-resort)              — currently a stub
+  1. Relay TTS (if a relay session_token is available)
+  2. Piper     (always last-resort)              — currently a stub
 
 Audio format output: WAV (PCM 16-bit, 22050Hz).
+​
+The addon never holds upstream provider API keys: synthesis goes through the
+Synork relay which authenticates the device by its short-lived session_token
+and calls the upstream provider with server-held credentials.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
-from .cartesia_tts import CartesiaTTS
+from .relay_tts import RelayTTS
 
 logger = logging.getLogger("synork.assistant.tts")
 
-# Threshold for auto-switching between Piper and ElevenLabs (legacy fallback).
-_SHORT_RESPONSE_CHARS = 100
-
 
 class TTSRouter:
-    """Routes TTS requests between online and offline providers.
+    """Routes TTS requests between cloud (relay-proxied) and local providers.
 
     Supports three providers:
+      - cloud: synthesizes via the Synork relay (proxies to Cartesia / etc.)
       - piper: local neural TTS (low latency, decent quality)
-      - elevenlabs: cloud neural TTS (higher quality, network dependent)
-      - auto: picks based on text length and network availability
+      - auto:  cloud when the relay session is available, otherwise piper
     """
 
     def __init__(
@@ -42,7 +40,7 @@ class TTSRouter:
         language: str = "hu",
         relay_url: Optional[str] = None,
         mock_mode: bool = False,
-        cartesia_api_key: Optional[str] = None,
+        session_token_getter: Optional[Callable[[], Optional[str]]] = None,
         cartesia_voice_id: Optional[str] = None,
     ) -> None:
         self.provider = provider
@@ -50,18 +48,18 @@ class TTSRouter:
         self._relay_url = relay_url
         self._mock_mode = mock_mode
         self._piper_available = False
-        self._elevenlabs_available = False
 
-        # Cartesia client — may be unconfigured; ``configured`` reports state.
-        self._cartesia = CartesiaTTS(
-            api_key=cartesia_api_key,
+        # Cloud TTS goes through the Synork relay — no upstream API key on device.
+        self._cloud = RelayTTS(
+            relay_api_url=relay_url or "",
+            session_token_getter=session_token_getter or (lambda: None),
             voice_id=cartesia_voice_id,
         )
 
     @property
-    def cartesia(self) -> CartesiaTTS:
-        """Direct access to the Cartesia client for callers that want streaming."""
-        return self._cartesia
+    def cloud(self) -> RelayTTS:
+        """Direct access to the relay-proxied client for callers that want streaming."""
+        return self._cloud
 
     async def initialize(self) -> None:
         """Check availability of TTS providers."""
@@ -71,21 +69,18 @@ class TTSRouter:
 
         # Check Piper availability
         self._piper_available = await self._check_piper()
-        # ElevenLabs availability depends on relay connectivity
-        self._elevenlabs_available = self._relay_url is not None
 
         logger.info(
-            "TTS router initialized: cartesia=%s, piper=%s, elevenlabs=%s, mode=%s",
-            self._cartesia.configured,
+            "TTS router initialized: cloud=%s, piper=%s, mode=%s",
+            self._cloud.configured,
             self._piper_available,
-            self._elevenlabs_available,
             self.provider,
         )
 
     async def aclose(self) -> None:
         """Release any pooled HTTP sessions held by cloud providers."""
         try:
-            await self._cartesia.close()
+            await self._cloud.close()
         except Exception:
             pass
 
@@ -95,16 +90,7 @@ class TTSRouter:
         language: Optional[str] = None,
         voice: Optional[str] = None,
     ) -> bytes:
-        """Synthesize speech from text using the best available provider.
-
-        Args:
-            text: The text to synthesize.
-            language: Language code (defaults to configured language).
-            voice: Optional voice identifier.
-
-        Returns:
-            Raw audio bytes (WAV format).
-        """
+        """Synthesize speech from text using the best available provider."""
         lang = language or self.language
 
         if self._mock_mode:
@@ -112,15 +98,13 @@ class TTSRouter:
 
         provider = self._select_provider(text)
 
-        if provider == "cartesia" and self._cartesia.configured:
-            return await self._synthesize_cartesia(text, lang, voice)
+        if provider in ("cloud", "cartesia", "elevenlabs") and self._cloud.configured:
+            return await self._synthesize_cloud(text, lang, voice)
         if provider == "piper" and self._piper_available:
             return await self._synthesize_piper(text, lang, voice)
-        if provider == "elevenlabs" and self._elevenlabs_available:
-            return await self._synthesize_elevenlabs(text, lang, voice)
         # Auto-fallbacks in priority order.
-        if self._cartesia.configured:
-            return await self._synthesize_cartesia(text, lang, voice)
+        if self._cloud.configured:
+            return await self._synthesize_cloud(text, lang, voice)
         if self._piper_available:
             return await self._synthesize_piper(text, lang, voice)
 
@@ -132,47 +116,29 @@ class TTSRouter:
         if self.provider != "auto":
             return self.provider
 
-        # Auto: Cartesia first when configured (best quality + streaming),
-        # then fall through to local/legacy providers.
-        if self._cartesia.configured:
-            return "cartesia"
-        if len(text) <= _SHORT_RESPONSE_CHARS:
-            return "piper"
-        if self._elevenlabs_available:
-            return "elevenlabs"
+        if self._cloud.configured:
+            return "cloud"
         return "piper"
 
-    async def _synthesize_cartesia(
+    async def _synthesize_cloud(
         self, text: str, language: str, voice: Optional[str]
     ) -> bytes:
-        """Synthesize via Cartesia Sonic-3 (cloud)."""
+        """Synthesize via the Synork relay (which proxies to Cartesia upstream)."""
         try:
-            return await self._cartesia.synthesize(text, language=language, voice=voice)
+            return await self._cloud.synthesize(text, language=language, voice=voice)
         except Exception as exc:
-            logger.error("Cartesia synth failed (%s) — falling back", exc)
+            logger.error("Cloud TTS failed (%s) — falling back", exc)
             return self._mock_synthesize(text, language)
 
     async def _synthesize_piper(self, text: str, language: str, voice: Optional[str]) -> bytes:
         """Synthesize using local Piper TTS."""
         # TODO: Implement when piper-tts dependency is available
-        # from piper import PiperVoice
-        # voice_model = voice or f"{language}-medium"
-        # return PiperVoice(voice_model).synthesize(text)
         logger.warning("Piper TTS not yet installed — using mock")
-        return self._mock_synthesize(text, language)
-
-    async def _synthesize_elevenlabs(self, text: str, language: str, voice: Optional[str]) -> bytes:
-        """Synthesize using ElevenLabs via the Synork relay."""
-        # TODO: Implement when relay has TTS proxy endpoint
-        # POST /api/home/tts with text + voice config
-        logger.warning("ElevenLabs TTS via relay not yet implemented — using mock")
         return self._mock_synthesize(text, language)
 
     async def _check_piper(self) -> bool:
         """Check if Piper TTS is available."""
         try:
-            # TODO: Check actual piper-tts import
-            # import piper
             return False
         except ImportError:
             return False

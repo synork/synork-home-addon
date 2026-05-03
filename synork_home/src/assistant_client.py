@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import random
 import time
 from datetime import datetime, timezone
@@ -476,13 +477,17 @@ class AssistantClient:
     # -- Config persistence ------------------------------------------------ #
 
     def _save_config(self) -> None:
-        """Persist pairing config locally for reconnection across reboots."""
+        """Persist pairing config locally for reconnection across reboots.
+
+        The device secret (and session token) are stored in a *separate*
+        sibling file with mode 0600 so that the human-readable config JSON
+        never contains long-lived credentials in clear text. ``load_config``
+        re-merges the two files on startup.
+        """
         config = {
             "paired_hub_id": self._hub_id,
             "paired_hub_address": self.hub_url,
             "satellite_id": self.satellite_id,
-            "device_secret": self._device_secret,
-            "hub_session_token": self._session_token,
             "room": self.room,
             "household_id": self._household_id,
             "household_name": self._household_name,
@@ -490,16 +495,39 @@ class AssistantClient:
         path = Path(_CONFIG_PATH)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2))
-        # Restrictive permissions — device_secret is sensitive
         path.chmod(0o600)
+
+        secret_path = path.with_suffix(path.suffix + ".secret")
+        secrets = {
+            "device_secret": self._device_secret,
+            "hub_session_token": self._session_token,
+        }
+        # Write atomically with restrictive perms so the secret never appears
+        # on disk world-readable, even briefly.
+        fd = os.open(
+            str(secret_path),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            os.write(fd, json.dumps(secrets).encode("utf-8"))
+        finally:
+            os.close(fd)
 
     @staticmethod
     def load_config() -> Optional[dict[str, Any]]:
-        """Load persisted pairing config, if it exists."""
+        """Load persisted pairing config (and sidecar secrets) if present."""
         path = Path(_CONFIG_PATH)
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            data = json.loads(path.read_text())
         except Exception:
             return None
+        secret_path = path.with_suffix(path.suffix + ".secret")
+        if secret_path.exists():
+            try:
+                data.update(json.loads(secret_path.read_text()))
+            except Exception:
+                pass
+        return data

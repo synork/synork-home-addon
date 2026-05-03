@@ -103,9 +103,9 @@ class RelayClient:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._last_heartbeat_recv = 0.0
 
-        # Set the first time auth succeeds; awaited by voice setup so the
-        # cloud_credentials pushed in RelayWelcome are in env before TTS /
-        # brain clients capture them at construction time.
+        # Set the first time auth succeeds; awaited by voice setup so cloud
+        # clients (TTS / brain) have a valid session_token to use as the
+        # Bearer token on Synork relay HTTP endpoints.
         self._first_auth_event = asyncio.Event()
 
         # Active personas and capabilities (set by main before connect)
@@ -338,7 +338,6 @@ class RelayClient:
             self._session_token = msg.session_token
             self._household_id = msg.household_id
             self._household_name = msg.household_name
-            self._apply_cloud_credentials(msg.cloud_credentials)
             return True
         elif isinstance(msg, ProtocolError):
             logger.error("Auth rejected: %s — %s", msg.code, msg.error_message)
@@ -369,40 +368,11 @@ class RelayClient:
             self._session_token = msg.session_token
             self._household_id = msg.household_id
             self._household_name = msg.household_name
-            self._apply_cloud_credentials(msg.cloud_credentials)
             logger.info("Session resumed successfully")
             return True
 
         # Session expired or invalid — fall through to full auth
         return False
-
-    # -- Cloud credentials -------------------------------------------------- #
-
-    @staticmethod
-    def _apply_cloud_credentials(creds: dict[str, str]) -> None:
-        """Export relay-supplied secrets as env vars so cloud clients see them.
-
-        The relay sends ``cloud_credentials`` in ``RelayWelcome`` so the user
-        never has to paste API keys into the HA add-on options. Empty values
-        are skipped so a dev override in the addon's environment wins. Each
-        key is logged by name only — values are never printed.
-        """
-        if not creds:
-            logger.info("Relay sent no cloud credentials (using addon env as-is)")
-            return
-        import os
-        applied: list[str] = []
-        for key, value in creds.items():
-            if not value:
-                continue
-            env_name = key.upper()
-            os.environ[env_name] = value
-            applied.append(env_name)
-        if applied:
-            logger.info("Applied cloud credentials from relay: %s",
-                        ", ".join(sorted(applied)))
-        else:
-            logger.info("Relay credentials payload was empty after filtering")
 
     # -- Message loop ------------------------------------------------------- #
 
