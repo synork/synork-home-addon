@@ -132,6 +132,12 @@ class SupervisorClient:
         """Patch the addon's ``options`` block (Supervisor merges with defaults)."""
         await self._request("POST", f"/addons/{slug}/options", json={"options": options})
 
+    async def restart_addon(self, slug: str) -> None:
+        """Restart an installed addon so option/file changes take effect."""
+        logger.info("Supervisor: restarting addon %s", slug)
+        await self._request("POST", f"/addons/{slug}/restart", timeout=_START_TIMEOUT)
+        logger.info("Supervisor: addon %s restarted", slug)
+
     async def ensure_addon_running(
         self,
         slug: str,
