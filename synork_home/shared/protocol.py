@@ -156,6 +156,16 @@ class RelayWelcome(BaseMessage):
         description="Short-lived session token for subsequent API calls.",
     )
     session_expires_at: datetime = Field(..., description="When the session token expires.")
+    cloud_credentials: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Relay-supplied secrets the addon must NOT ask the user for. "
+            "Keys: cartesia_api_key, cartesia_voice_id, openrouter_api_key, "
+            "arlo_internal_secret. Values are exported as the matching "
+            "uppercase env vars by the addon so cloud TTS / brain just work. "
+            "Empty values are skipped (existing env is preserved)."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

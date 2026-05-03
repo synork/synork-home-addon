@@ -130,7 +130,9 @@ class AddonConfig:
         self.cloud_stt: bool = args.cloud_stt.lower() == "true"
         self.wake_word: str = args.wake_word
         self.tts_provider: str = args.tts_provider
-        self.cartesia_api_key: str = getattr(args, "cartesia_api_key", "") or ""
+        # cartesia_api_key intentionally NOT in config — supplied by the relay
+        # over WS (see RelayWelcome.cloud_credentials) and read from env at
+        # the cartesia client. Only voice_id is user-selectable.
         self.cartesia_voice_id: str = getattr(args, "cartesia_voice_id", "") or ""
         self.assistant_pipeline: bool = args.assistant_pipeline.lower() == "true"
         self.frontend_patcher: bool = args.frontend_patcher.lower() == "true"
@@ -962,6 +964,18 @@ class SynorkAddon:
         # Start relay connection in background (auto-reconnects)
         self._relay_task = asyncio.create_task(self._relay_client.connect())
 
+        # Block briefly so cloud_credentials from RelayWelcome land in env
+        # before Phase 5 constructs cloud TTS / brain clients. Non-fatal:
+        # if the relay is unreachable, voice degrades to local providers and
+        # picks up creds on the next reconnect.
+        if await self._relay_client.wait_for_auth(timeout=10.0):
+            logger.info("Phase 4: relay authenticated — cloud credentials in env")
+        else:
+            logger.warning(
+                "Phase 4: relay auth not complete after 10s — "
+                "voice will start with local fallbacks until creds arrive"
+            )
+
     async def _push_initial_registry_snapshot(self) -> None:
         """Build and send a fresh HA device/entity registry snapshot."""
         if not self._ha_bridge or not self._ha_bridge.connected:
@@ -1146,7 +1160,8 @@ class SynorkAddon:
                 language=self.config.language,
                 relay_url=self.config.relay_api_url,
                 mock_mode=mock,
-                cartesia_api_key=self.config.cartesia_api_key,
+                # api key comes from env (relay-pushed via RelayWelcome)
+                cartesia_api_key=None,
                 cartesia_voice_id=self.config.cartesia_voice_id,
             )
             await tts.initialize()
@@ -1285,7 +1300,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cloud-stt", default="false", help="Enable cloud STT")
     parser.add_argument("--wake-word", default="hey_synork", help="Wake word model name")
     parser.add_argument("--tts-provider", default="auto", help="TTS provider (auto/cartesia/piper/elevenlabs)")
-    parser.add_argument("--cartesia-api-key", default="", help="Cartesia Sonic-3 API key (cloud TTS)")
+    parser.add_argument("--tts-provider", default="auto", help="TTS provider (auto|cartesia|piper|elevenlabs)")
+    parser.add_argument("--cartesia-voice-id", default="", help="Cartesia voice ID (user-selectable)")
     parser.add_argument("--cartesia-voice-id", default="", help="Cartesia voice id used for Arlo's voice")
     parser.add_argument("--assistant-pipeline", default="true", help="Enable assistant pipeline")
     parser.add_argument("--frontend-patcher", default="true", help="Enable frontend patcher")
