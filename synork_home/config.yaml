@@ -1,6 +1,6 @@
 # Synork Home — Home Assistant Add-on Manifest
 name: "Synork Home"
-version: "0.2.2"
+version: "0.2.3"
 slug: synork_home
 description: >-
   Synork Home — smart home hub add-on for Home Assistant.
@@ -27,11 +27,8 @@ options:
   cloud_stt: false
   wake_word: "hey_synork"
   tts_provider: "auto"
-  cartesia_api_key: ""
   cartesia_voice_id: ""
-  openrouter_api_key: ""
   arlo_enabled: true
-  arlo_internal_secret: ""
   arlo_language: ""
   wake_word_threshold: 0.55
   whisper_model: "large-v3-turbo"
@@ -55,11 +52,8 @@ schema:
   cloud_stt: bool
   wake_word: str
   tts_provider: list(auto|cartesia|piper|elevenlabs)
-  cartesia_api_key: password
   cartesia_voice_id: str
-  openrouter_api_key: password
   arlo_enabled: bool
-  arlo_internal_secret: password
   arlo_language: str
   wake_word_threshold: float(0.0,1.0)
   whisper_model: list(tiny|base|small|medium|large-v3|large-v3-turbo)
