@@ -24,14 +24,10 @@ webrtcvad>=2.0.10,<3.0
 # Numerical (required by openwakeword + faster-whisper)
 numpy>=1.26,<2.0
 
-# ONNX Runtime (CPU) — used by openWakeWord
-onnxruntime>=1.17,<2.0
-
-# Wake word detection (openWakeWord)
-openwakeword>=0.6,<1.0
-
-# STT — faster-whisper for local transcription (CTranslate2 INT8 by default).
-faster-whisper>=1.0,<2.0
+# Heavy ML deps (onnxruntime / openwakeword / faster-whisper) live in
+# requirements-optional.txt — best-effort install in the Dockerfile so a
+# missing musllinux wheel for one of them can never break the addon image.
+# The bootloader retries them at runtime once the device is online.
 
 # TTS — Cartesia is HTTP only (covered by aiohttp). Piper local TTS is opt-in.
 # Uncomment to enable a local Piper fallback (~80MB model).
