@@ -138,6 +138,13 @@ class AddonConfig:
         # user-selectable.
         self.cartesia_voice_id: str = getattr(args, "cartesia_voice_id", "") or ""
         self.assistant_pipeline: bool = args.assistant_pipeline.lower() == "true"
+        # When true, run the local in-process pipeline even if HA's Wyoming
+        # add-ons (whisper / openWakeWord / piper) are auto-provisioned.
+        # Lets users keep HA Assist as a fallback while the local pipeline
+        # owns the chosen mic (incl. Pulse-routed sources like AirPods).
+        self.force_local_pipeline: bool = (
+            getattr(args, "force_local_pipeline", "false").lower() == "true"
+        )
         self.frontend_patcher: bool = args.frontend_patcher.lower() == "true"
         self.satellite_port: int = int(args.satellite_port)
         # Mic selection: "auto" runs full discovery; an integer string
@@ -1119,21 +1126,38 @@ class SynorkAddon:
             return
 
         # If HA's Wyoming add-ons (whisper + openWakeWord, optionally piper)
-        # were auto-provisioned successfully, voice flows through HA Assist
-        # via the wyoming integration's mDNS-advertised pipeline. Starting
-        # the local in-process pipeline on top would (a) duplicate audio
-        # capture against the same /dev/snd device and (b) currently fall
-        # back to mock mode anyway because the local STT/wake-word backends
-        # are TODO stubs. Skip it and log clearly where voice lives.
+        # were auto-provisioned successfully, voice normally flows through
+        # HA Assist via the wyoming integration. Starting the local in-process
+        # pipeline on top would duplicate audio capture against the same
+        # /dev/snd device. The user can override this when they want the
+        # local pipeline to own the mic (e.g. to use Pulse-routed AirPods or
+        # USB headsets that HA's Wyoming add-on can't see).
+        force_local = self.config.force_local_pipeline
+        try:
+            prefs_raw = Path("/data/synork/prefs.json").read_text()
+            prefs = json.loads(prefs_raw) if prefs_raw.strip() else {}
+            if "force_local_pipeline" in prefs:
+                force_local = bool(prefs.get("force_local_pipeline"))
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("Phase 5: failed to read force_local pref: %s", exc)
+
         ww_ready = self._wyoming_voice_provisioned.get("wake_word", False)
         stt_ready = self._wyoming_voice_provisioned.get("stt", False)
-        if ww_ready and stt_ready:
+        if ww_ready and stt_ready and not force_local:
             logger.info(
                 "Phase 5: Wyoming voice add-ons running (wake_word, stt"
-                "%s) \u2014 voice handled by HA Assist; local pipeline skipped",
+                "%s) \u2014 voice handled by HA Assist; local pipeline skipped "
+                "(set force_local_pipeline=true to override)",
                 ", tts" if self._wyoming_voice_provisioned.get("tts") else "",
             )
             return
+        if force_local and (ww_ready or stt_ready):
+            logger.info(
+                "Phase 5: force_local_pipeline=true \u2014 running local "
+                "pipeline alongside Wyoming (HA Assist remains available)"
+            )
 
         logger.info(
             "Phase 5: Starting assistant pipeline (mic: %s)",
