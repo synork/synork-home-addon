@@ -33,10 +33,14 @@ MODELS_DIR = DATA_DIR / "models"
 VOICE_CONFIG = DATA_DIR / "arlo_voice.json"
 
 WAKE_WORD_MODEL_NAME = "hey_arlo.onnx"
-# Custom-trained model published by the train-wake-word.yml workflow.
-# Releases are tagged wake-word-v* — we always pull the latest non-prerelease.
+# Custom-trained model published from the synork/synork-wake-word repo.
+# Releases are tagged v* — we always pull the latest non-prerelease.
 WAKE_WORD_RELEASE_API = (
-    "https://api.github.com/repos/synork/Synork/releases/latest"
+    "https://api.github.com/repos/synork/synork-wake-word/releases/latest"
+)
+# Direct download of the asset on the latest release (no API rate limits).
+WAKE_WORD_DIRECT_URL = (
+    "https://github.com/synork/synork-wake-word/releases/latest/download/hey_arlo.onnx"
 )
 # Fallback if no release exists yet — closest community model.
 FALLBACK_WAKE_WORD = "hey_jarvis_v0.1"
@@ -58,6 +62,12 @@ def _setup_wake_word() -> None:
     if _fetch_wake_word_from_release(target):
         return
 
+    # API call failed (rate limited, no network, etc.) — try the direct
+    # /releases/latest/download URL which always points at the newest
+    # asset and doesn't count against the GitHub REST API quota.
+    if _fetch_wake_word_direct(target):
+        return
+
     # Otherwise fall back to a community model so the runtime has something.
     try:
         import openwakeword  # type: ignore
@@ -65,6 +75,33 @@ def _setup_wake_word() -> None:
         log.info("Downloaded fallback wake word model: %s", FALLBACK_WAKE_WORD)
     except Exception as exc:
         log.warning("Could not pre-download wake word model: %s", exc)
+
+
+def _fetch_wake_word_direct(target: Path) -> bool:
+    """Download via the GitHub /releases/latest/download/<asset> redirect."""
+    try:
+        import urllib.request
+    except Exception:
+        return False
+    tmp = target.with_suffix(".onnx.partial")
+    try:
+        req = urllib.request.Request(
+            WAKE_WORD_DIRECT_URL,
+            headers={"User-Agent": "synork-arlo"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp, tmp.open("wb") as fh:
+            fh.write(resp.read())
+        if tmp.stat().st_size < 1024:
+            tmp.unlink(missing_ok=True)
+            return False
+        tmp.replace(target)
+        log.info("Downloaded wake word model via direct URL: %s (%d bytes)",
+                 target, target.stat().st_size)
+        return True
+    except Exception as exc:
+        log.info("Direct wake word download failed: %s", exc)
+        tmp.unlink(missing_ok=True)
+        return False
 
 
 def _fetch_wake_word_from_release(target: Path) -> bool:
