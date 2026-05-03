@@ -139,6 +139,11 @@ class AddonConfig:
         self.assistant_pipeline: bool = args.assistant_pipeline.lower() == "true"
         self.frontend_patcher: bool = args.frontend_patcher.lower() == "true"
         self.satellite_port: int = int(args.satellite_port)
+        # Mic selection: "auto" runs full discovery; an integer string
+        # ("2") forces that PortAudio device index; any other non-empty
+        # value is treated as a name keyword that boosts matching candidates
+        # in the discovery scorer (e.g. "respeaker" or "usb audio").
+        self.audio_device: str = (getattr(args, "audio_device", "") or "auto").strip() or "auto"
 
         # Wizard-managed sidecar overrides CLI args for hub identity + relay URLs.
         # Only applies in Hub mode — Assistant mode's pairing lives at
@@ -1136,25 +1141,35 @@ class SynorkAddon:
 
         mock = self.config.mock_hardware
 
-        # Zero-config mic selection: probe PortAudio, score candidates,
-        # verify by actually opening at 16 kHz mono. Result is `None` when
-        # nothing opens — in which case PyAudio falls back to its own
-        # default. Skipped entirely in mock mode.
+        # Mic selection: zero-config by default. ``audio_device`` can override:
+        #   "auto"          -> full discovery (the common case)
+        #   "<integer>"     -> force that exact PortAudio device index
+        #   any other text  -> name keyword that boosts matching candidates
+        # When nothing matches/opens we fall back to PortAudio's own default.
         mic_index: Optional[int] = None
         if not mock:
-            try:
-                loop = asyncio.get_running_loop()
-                discovered = await loop.run_in_executor(None, discover_input_device)
-                mic_index = discovered.index
-                logger.info(
-                    "Phase 5: mic auto-discovery — device='%s' idx=%s (%s)",
-                    discovered.name, discovered.index, discovered.reason,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Phase 5: mic auto-discovery failed (%s) — "
-                    "falling back to PortAudio default", exc,
-                )
+            override = (self.config.audio_device or "auto").strip()
+            if override.isdigit():
+                mic_index = int(override)
+                logger.info("Phase 5: mic forced by config — index=%d", mic_index)
+            else:
+                prefer = None if override.lower() == "auto" else (override,)
+                try:
+                    loop = asyncio.get_running_loop()
+                    discovered = await loop.run_in_executor(
+                        None, lambda: discover_input_device(prefer)
+                    )
+                    mic_index = discovered.index
+                    logger.info(
+                        "Phase 5: mic auto-discovery — device='%s' idx=%s (%s)%s",
+                        discovered.name, discovered.index, discovered.reason,
+                        f" [keyword='{override}']" if prefer else "",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Phase 5: mic auto-discovery failed (%s) — "
+                        "falling back to PortAudio default", exc,
+                    )
 
         try:
             # Initialize pipeline components
@@ -1332,6 +1347,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--assistant-pipeline", default="true", help="Enable assistant pipeline")
     parser.add_argument("--frontend-patcher", default="true", help="Enable frontend patcher")
     parser.add_argument("--satellite-port", default="8765", help="Port for satellite WebSocket connections (Hub mode)")
+    parser.add_argument("--audio-device", default="auto", help="Mic selection: 'auto' (default), a PortAudio device index, or a name keyword like 'respeaker'")
     return parser.parse_args()
 
 

@@ -27,9 +27,10 @@ WHISPER_MODEL=$(bashio::config 'whisper_model')
 ASSISTANT_PIPELINE=$(bashio::config 'assistant_pipeline')
 FRONTEND_PATCHER=$(bashio::config 'frontend_patcher')
 SATELLITE_PORT=$(bashio::config 'satellite_port')
+AUDIO_DEVICE=$(bashio::config 'audio_device')
 MODE=$(bashio::config 'mode')
 
-bashio::log.info "Synork Home v0.2.6 — live entrypoint"
+bashio::log.info "Synork Home v0.2.7 — live entrypoint"
 bashio::log.info "Mode: ${MODE} | Language: ${LANGUAGE} | Log level: ${LOG_LEVEL}"
 if [ -n "${DEVICE_ID}" ]; then
     bashio::log.info "Device ID: ${DEVICE_ID}"
@@ -42,10 +43,10 @@ bashio::log.info "Update channel: ${SYNORK_UPDATE_CHANNEL:-stable}"
 # --------------------------------------------------------------------------- #
 # Arlo voice assistant — env + first-boot setup
 # --------------------------------------------------------------------------- #
-# Cloud credentials (Cartesia API key, OpenRouter API key, Arlo internal
-# secret) are NOT user-facing. The relay pushes them to the addon over the
-# WS session in RelayWelcome.cloud_credentials. Until the relay connects
-# the runtime falls back to local providers (Piper TTS, mock brain).
+# Cloud calls (TTS, brain) are proxied through the Synork relay using the
+# device's short-lived WS session_token as Bearer auth. The relay holds the
+# upstream provider keys server-side — no API keys ever live on the device.
+# Until the relay connects the runtime falls back to local providers.
 export CARTESIA_VOICE_ID="${CARTESIA_VOICE_ID}"
 export ARLO_LANGUAGE="${ARLO_LANGUAGE:-${LANGUAGE}}"
 export WAKE_WORD_THRESHOLD="${WAKE_WORD_THRESHOLD:-0.55}"
@@ -57,7 +58,8 @@ if [ "${ARLO_ENABLED}" = "true" ]; then
     bashio::log.info "  STT model:     ${WHISPER_MODEL}"
     bashio::log.info "  TTS provider:  ${TTS_PROVIDER}"
     bashio::log.info "  Language:      ${ARLO_LANGUAGE}"
-    bashio::log.info "  Cloud creds:   supplied by relay (no API keys here)"
+    bashio::log.info "  Audio device:  ${AUDIO_DEVICE:-auto}"
+    bashio::log.info "  Cloud calls:   proxied via Synork relay (no keys on device)"
 
     # Idempotent first-boot setup: download wake-word model into Synork dir
     # and into Wyoming openWakeWord's /share/openwakeword/, fetch Cartesia
@@ -102,4 +104,5 @@ exec python3 /opt/bootloader.py \
     --assistant-pipeline "${ASSISTANT_PIPELINE}" \
     --frontend-patcher "${FRONTEND_PATCHER}" \
     --satellite-port "${SATELLITE_PORT}" \
+    --audio-device "${AUDIO_DEVICE:-auto}" \
     --mode "${MODE}"

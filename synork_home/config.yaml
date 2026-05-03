@@ -35,6 +35,7 @@ options:
   assistant_pipeline: true
   frontend_patcher: true
   satellite_port: 8765
+  audio_device: "auto"
   update_channel: "stable"
   update_repo_url: "https://github.com/synork/synork-home-addon.git"
   disable_autoupdate: false
@@ -60,6 +61,7 @@ schema:
   assistant_pipeline: bool
   frontend_patcher: bool
   satellite_port: "int(1024,65535)?"
+  audio_device: str
   update_channel: list(stable|beta|dev)
   update_repo_url: url
   disable_autoupdate: bool
