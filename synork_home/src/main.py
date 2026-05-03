@@ -54,6 +54,7 @@ from persona.personas.satellite import SatellitePersona
 from persona.personas.speaker import SpeakerPersona
 from persona.personas.composite import CompositePersona
 from assistant.wake_word import WakeWordDetector
+from assistant.audio_io import discover_input_device
 from assistant.vad import VADProcessor
 from assistant.stt import STTEngine
 from assistant.tts_router import TTSRouter
@@ -1135,11 +1136,32 @@ class SynorkAddon:
 
         mock = self.config.mock_hardware
 
+        # Zero-config mic selection: probe PortAudio, score candidates,
+        # verify by actually opening at 16 kHz mono. Result is `None` when
+        # nothing opens — in which case PyAudio falls back to its own
+        # default. Skipped entirely in mock mode.
+        mic_index: Optional[int] = None
+        if not mock:
+            try:
+                loop = asyncio.get_running_loop()
+                discovered = await loop.run_in_executor(None, discover_input_device)
+                mic_index = discovered.index
+                logger.info(
+                    "Phase 5: mic auto-discovery — device='%s' idx=%s (%s)",
+                    discovered.name, discovered.index, discovered.reason,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Phase 5: mic auto-discovery failed (%s) — "
+                    "falling back to PortAudio default", exc,
+                )
+
         try:
             # Initialize pipeline components
             wake_word = WakeWordDetector(
                 model_name=self.config.wake_word,
                 mock_mode=mock,
+                audio_device_index=mic_index,
             )
 
             vad = VADProcessor(
