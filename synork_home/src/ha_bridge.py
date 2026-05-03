@@ -199,6 +199,43 @@ class HABridge:
             self._pending.pop(msg_id, None)
             raise
 
+    # -- HTTP (REST) helpers ------------------------------------------------ #
+    #
+    # A handful of HA admin endpoints — most importantly config_entries/flow
+    # — are NOT exposed on the WebSocket API. Calling them via WS yields
+    # ``unknown_command``. They have to go through the REST API on
+    # ``http://supervisor/core/api/...`` with the Supervisor bearer token.
+
+    async def _http_request(
+        self,
+        method: str,
+        path: str,
+        json_body: Optional[dict[str, Any]] = None,
+        timeout: float = 15.0,
+    ) -> Any:
+        if not self._session or self._session.closed:
+            raise RuntimeError("HA HTTP session is not open")
+        url = f"{self.ha_url}/api/{path.lstrip('/')}"
+        headers = {
+            "Authorization": f"Bearer {self.ha_token}",
+            "Content-Type": "application/json",
+        }
+        async with self._session.request(
+            method, url, json=json_body, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(
+                    f"HA REST {method} {path} \u2192 HTTP {resp.status}: {text[:200]}"
+                )
+            if not text:
+                return None
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return text
+
     # -- State management --------------------------------------------------- #
 
     async def _load_all_states(self) -> None:
@@ -441,38 +478,41 @@ class HABridge:
         handler: str,
         show_advanced_options: bool = True,
     ) -> dict[str, Any]:
-        """Initiate a config flow for an integration. Returns the first step payload."""
-        result = await self._ws_call({
-            "type": "config_entries/flow/init",
-            "handler": handler,
-            "show_advanced_options": show_advanced_options,
-        })
-        if not result.get("success"):
-            raise RuntimeError(f"flow/init failed for {handler}: {result.get('error')}")
-        return result.get("result", {}) or {}
+        """Initiate a config flow for an integration. Returns the first step payload.
+
+        HA exposes flow init/configure/abort over REST only; the WS API
+        rejects ``config_entries/flow/init`` with ``unknown_command``.
+        """
+        try:
+            return await self._http_request(
+                "POST",
+                "config/config_entries/flow",
+                {"handler": handler, "show_advanced_options": show_advanced_options},
+            ) or {}
+        except Exception as exc:
+            raise RuntimeError(f"flow/init failed for {handler}: {exc}") from exc
 
     async def submit_config_flow_step(
         self,
         flow_id: str,
         user_input: dict[str, Any],
     ) -> dict[str, Any]:
-        """Submit user input for the current config flow step."""
-        result = await self._ws_call({
-            "type": "config_entries/flow/configure",
-            "flow_id": flow_id,
-            "user_input": user_input,
-        })
-        if not result.get("success"):
-            raise RuntimeError(f"flow/configure failed: {result.get('error')}")
-        return result.get("result", {}) or {}
+        """Submit user input for the current config flow step (REST)."""
+        try:
+            return await self._http_request(
+                "POST",
+                f"config/config_entries/flow/{flow_id}",
+                user_input or {},
+            ) or {}
+        except Exception as exc:
+            raise RuntimeError(f"flow/configure failed: {exc}") from exc
 
     async def abort_config_flow(self, flow_id: str) -> None:
-        """Best-effort abort of a config flow we couldn't complete."""
+        """Best-effort abort of a config flow we couldn't complete (REST DELETE)."""
         try:
-            await self._ws_call({
-                "type": "config_entries/flow/abort",
-                "flow_id": flow_id,
-            })
+            await self._http_request(
+                "DELETE", f"config/config_entries/flow/{flow_id}",
+            )
         except Exception:
             pass
 
