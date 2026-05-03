@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -1149,6 +1150,25 @@ class SynorkAddon:
         mic_index: Optional[int] = None
         if not mock:
             override = (self.config.audio_device or "auto").strip()
+            # Per-device prefs from the Synork web frontend take precedence
+            # over the HA add-on option. Stored by RelayClient at
+            # /data/synork/prefs.json after each RelayWelcome /
+            # DevicePrefsUpdate.
+            try:
+                prefs_raw = Path("/data/synork/prefs.json").read_text()
+                prefs = json.loads(prefs_raw) if prefs_raw.strip() else {}
+                pref_dev = (prefs.get("audio_device") or "").strip()
+                if pref_dev:
+                    logger.info(
+                        "Phase 5: audio_device overridden by Synork web prefs "
+                        "('%s' -> '%s')", override, pref_dev,
+                    )
+                    override = pref_dev
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                logger.warning("Phase 5: failed to read device prefs: %s", exc)
+
             if override.isdigit():
                 mic_index = int(override)
                 logger.info("Phase 5: mic forced by config — index=%d", mic_index)

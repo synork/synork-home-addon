@@ -161,6 +161,14 @@ class HouseholdDevice(BaseModel):
         default_factory=list,
         description="Active persona names on this device.",
     )
+    prefs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-device preferences set from the Synork web frontend (e.g. "
+            "audio_device override, future wake_word/tts knobs). The relay "
+            "pushes these to the addon over the WS link."
+        ),
+    )
 
 
 class Household(BaseModel):

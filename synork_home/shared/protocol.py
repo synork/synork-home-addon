@@ -162,6 +162,30 @@ class RelayWelcome(BaseMessage):
         ),
     )
     session_expires_at: datetime = Field(..., description="When the session token expires.")
+    prefs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-device preferences set by the user from the Synork web "
+            "frontend (e.g. audio_device override). Empty dict if the user "
+            "hasn't set any. Subsequent changes are pushed via "
+            "DevicePrefsUpdate without requiring a reconnect."
+        ),
+    )
+
+
+class DevicePrefsUpdate(BaseMessage):
+    """Relay → addon. Live update of per-device preferences.
+
+    Sent whenever the user changes a device-scoped setting from the Synork
+    web frontend. The addon should persist the full ``prefs`` dict (it is
+    a complete replacement, not a patch) and apply applicable knobs on the
+    next pipeline init — or live where supported.
+    """
+    message_type: Literal["device_prefs_update"] = "device_prefs_update"
+    prefs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Full prefs blob for this device. Replaces the addon's local copy.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +593,7 @@ RelayMessage = Annotated[
         AuthChallenge,
         AuthResponse,
         RelayWelcome,
+        DevicePrefsUpdate,
         EntityStateUpdate,
         EntityStateQuery,
         DeviceRegistrySnapshot,

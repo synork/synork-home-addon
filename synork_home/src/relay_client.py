@@ -18,6 +18,7 @@ import logging
 import random
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
 
 import websockets
@@ -31,6 +32,7 @@ from shared.protocol import (
     AuthResponse,
     BaseMessage,
     Disconnect,
+    DevicePrefsUpdate,
     EntityStatePayload,
     EntityStateUpdate,
     Heartbeat,
@@ -61,6 +63,11 @@ _RECONNECT_JITTER_FACTOR = 0.3
 _HEARTBEAT_INTERVAL = 30.0
 _HEARTBEAT_MISS_LIMIT = 3
 _AUTH_TIMEOUT = 10.0
+
+# Per-device prefs pushed by the Synork web frontend (audio_device override
+# etc.). Persisted so the addon can apply them at boot before the relay WS
+# is up. Replaced wholesale on every RelayWelcome / DevicePrefsUpdate.
+_PREFS_PATH = Path("/data/synork/prefs.json")
 
 
 class RelayClient:
@@ -117,6 +124,11 @@ class RelayClient:
         # Message handlers keyed by message_type
         self._handlers: dict[str, MessageHandler] = {}
 
+        # Latest per-device prefs (audio_device, future TTS / wake-word knobs)
+        # received from the relay. Persisted to /data/synork/prefs.json so a
+        # restart applies them even before the WS connects.
+        self._prefs: dict[str, Any] = {}
+
         # Callbacks fired once auth succeeds (after each (re)connect).
         self._connected_callbacks: list[Callable[[], Coroutine[Any, Any, None]]] = []
 
@@ -136,6 +148,24 @@ class RelayClient:
     @property
     def household_id(self) -> Optional[str]:
         return self._household_id
+
+    @property
+    def prefs(self) -> dict[str, Any]:
+        """Latest per-device prefs received from the relay."""
+        return dict(self._prefs)
+
+    def _persist_prefs(self, prefs: Any) -> None:
+        """Replace in-memory + on-disk prefs with the supplied dict."""
+        if not isinstance(prefs, dict):
+            return
+        self._prefs = dict(prefs)
+        try:
+            _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _PREFS_PATH.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._prefs, indent=2))
+            tmp.replace(_PREFS_PATH)
+        except Exception as exc:
+            logger.warning("Failed to persist device prefs: %s", exc)
 
     async def wait_for_auth(self, timeout: float = 10.0) -> bool:
         """Block until first successful auth (so cloud creds are in env), or timeout."""
@@ -338,6 +368,7 @@ class RelayClient:
             self._session_token = msg.session_token
             self._household_id = msg.household_id
             self._household_name = msg.household_name
+            self._persist_prefs(getattr(msg, "prefs", {}) or {})
             return True
         elif isinstance(msg, ProtocolError):
             logger.error("Auth rejected: %s — %s", msg.code, msg.error_message)
@@ -368,6 +399,7 @@ class RelayClient:
             self._session_token = msg.session_token
             self._household_id = msg.household_id
             self._household_name = msg.household_name
+            self._persist_prefs(getattr(msg, "prefs", {}) or {})
             logger.info("Session resumed successfully")
             return True
 
@@ -408,6 +440,15 @@ class RelayClient:
             assert isinstance(msg, Disconnect)
             logger.info("Relay disconnect: %s (will_reconnect=%s)", msg.reason, msg.will_reconnect)
             return
+
+        # Per-device prefs pushed by the Synork web frontend. Persist them
+        # so the next pipeline init / restart picks them up. Also fan out
+        # to user-registered handlers below for live reactions.
+        if mt == "device_prefs_update":
+            assert isinstance(msg, DevicePrefsUpdate)
+            self._persist_prefs(msg.prefs or {})
+            logger.info("Device prefs updated from frontend: %s", list(msg.prefs.keys()))
+            # fall through so a custom handler (if registered) can react live
 
         # Service call response — resolve pending future
         if mt == "service_call_response":
